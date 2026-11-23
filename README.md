@@ -18,7 +18,7 @@ Local smart-laundry cloud emulator and **Home Assistant MQTT Auto-Discovery** br
 
 ## Prerequisites (Initial Wi-Fi Setup)
 
-Before enabling local DNS overrides or blocking outbound internet access, you **must** first connect your washer and dryer to your Wi-Fi network (or IoT VLAN) using the official **LG ThinQ mobile app**:
+Before enabling local DNS overrides or blocking outbound internet access, you **must** first connect your washer and dryer to your Wi-Fi network using the official **LG ThinQ mobile app**:
 
 1. Pair each appliance in the LG ThinQ app while normal internet access and public DNS are still active so the appliance saves your Wi-Fi credentials.
 2. Assign static DHCP reservations for the appliances on your router/DHCP server (recommended if you configure `SPINQ_KNOWN_APPLIANCES`).
