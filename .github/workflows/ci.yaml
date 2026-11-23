@@ -26,11 +26,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Ruff
-        uses: astral-sh/setup-ruff@v3
-
       - name: Run Ruff check
-        run: ruff check src tests
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: check
+          src: >-
+            src
+            tests
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -110,7 +112,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Attest build provenance
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.event.repository.private == false
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ghcr.io/${{ github.repository }}
