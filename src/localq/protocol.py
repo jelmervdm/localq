@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
+from localq import __version__
+
 
 class RunState(StrEnum):
     """Normalized LG ThinQ v2 appliance states matching HA ``lg_thinq`` schemas."""
@@ -370,6 +372,6 @@ def build_dispatch_response(
             "apiServer": api_base,
             "mqttServer": mqtt_uri,
             "rtiUri": mqtt_uri,
-            "appVersion": "localq-0.1.0",
+            "appVersion": f"localq-{__version__}",
         },
     }

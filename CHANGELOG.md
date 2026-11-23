@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-11-23
+
+### Fixed
+
+- Separated internal bind ports (`LOCALQ_HTTPS_PORT`, `LOCALQ_MQTT_TLS_PORT`) from externally advertised `/route` dispatch ports via `LOCALQ_PUBLIC_HTTPS_PORT` (default `443`) and `LOCALQ_PUBLIC_MQTT_TLS_PORT` (default `8883`) so `/route` advertises port `443` when mapped `443 -> 8443`.
+
+### Added
+
+- Port `443` exposure and Layer 4 TLS SNI passthrough reverse proxy documentation (Nginx, Traefik, HAProxy, dedicated IP, and rootless Linux `sysctl`) in [docs/deployment.md](docs/deployment.md) and [README.md](README.md).
+- Renovate configuration (`renovate.json`) for weekly GitHub Actions and `Containerfile` digest updates.
+- Dynamic `appVersion` in `/route` responses derived from `localq.__version__`.
+
 ## [0.1.0] - 2026-11-23
 
 Initial public release of `localq` (`localqd`) — local smart-appliance cloud emulator and Home Assistant MQTT Auto-Discovery bridge.
