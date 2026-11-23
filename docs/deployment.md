@@ -1,8 +1,18 @@
 # Deployment & Self-Hosting Guide
 
-This guide walks through deploying `spinq` on your local network, overriding cloud DNS records so appliances connect locally, and verifying Home Assistant MQTT Auto-Discovery.
+This guide walks through onboarding appliances onto your Wi-Fi network, deploying `spinq` locally, overriding cloud DNS records so appliances connect to `spinqd`, and verifying Home Assistant MQTT Auto-Discovery.
 
-## 1. Network & Port Requirements
+## 1. Initial Appliance Wi-Fi Setup (LG ThinQ App)
+
+`spinq` intercepts traffic from appliances that are already joined to your local Wi-Fi network. **Initial Wi-Fi pairing still requires the official LG ThinQ mobile app**:
+
+1. **Keep standard internet & DNS active** during onboarding (do not enable local ThinQ DNS overrides or block WAN egress for the appliances yet).
+2. Open the **LG ThinQ mobile app** and complete the standard Wi-Fi pairing flow for your washer and/or dryer, connecting them to your target Wi-Fi SSID (or IoT VLAN).
+3. **Assign static DHCP leases** for each appliance on your router/DHCP server and note their LAN IP addresses (useful if you map them in `SPINQ_KNOWN_APPLIANCES`).
+4. **Cutover order**: Onboard appliances via the LG ThinQ app → deploy `spinqd` → enable local DNS overrides → verify local telemetry in `spinqd` logs → optionally block outbound WAN access for the appliances at your firewall.
+5. **Remote Control Note**: Physical **Remote Start** must be armed on the appliance control panel for downstream `start`/`stop` commands from Home Assistant to be accepted by the firmware.
+
+## 2. Network & Port Requirements
 
 Appliances connect to `spinqd` over TLS using the standard ThinQ cloud ports (`443` and `8883`), while `spinqd` connects outbound to your Home Assistant Mosquitto broker:
 
@@ -15,7 +25,7 @@ Appliances connect to `spinqd` over TLS using the standard ThinQ cloud ports (`4
 > [!NOTE]
 > If your appliances live on an isolated IoT VLAN, ensure your firewall allows `443/tcp` and `8883/tcp` from the appliances to `spinqd`, and allows `spinqd` to reach Mosquitto on `1883/tcp`.
 
-## 2. Deploy `spinqd`
+## 3. Deploy `spinqd`
 
 ### Option A: Docker / Podman Compose
 
@@ -54,7 +64,7 @@ The `spinq-certs` volume persists `/data/certs` across restarts so the local Roo
    ```
 4. Note the external IP assigned to `service/spinq` (`kubectl get svc spinq`). If you want appliances to survive Root CA inspection or preserve certificates across pod reschedules, swap the `certs` `emptyDir` volume in `k8s/deployment.yaml` for a `PersistentVolumeClaim`.
 
-## 3. Configure Local DNS Overrides
+## 4. Configure Local DNS Overrides
 
 Point the ThinQ cloud endpoints at the IP address of your `spinqd` host or Kubernetes `LoadBalancer` service (`<SPINQ_IP>`):
 
@@ -72,7 +82,7 @@ Common DNS resolver setups:
   ```
 - **Technitium DNS / CoreDNS**: Create authoritative local zone entries (or `hosts` overrides) returning `<SPINQ_IP>` for both domains.
 
-## 4. Verify Connection & Home Assistant Discovery
+## 5. Verify Connection & Home Assistant Discovery
 
 Watch the `spinqd` logs while power-cycling an appliance or toggling its Wi-Fi/cycle state:
 
@@ -91,7 +101,7 @@ Expected log sequence on a successful connection:
 
 Once the first telemetry payload arrives, Home Assistant MQTT Auto-Discovery automatically creates entities such as `sensor.dryer_current_status`, `select.dryer_operation`, `sensor.front_load_washer_current_status`, and `binary_sensor.front_load_washer_run_completed`.
 
-## 5. Troubleshooting & Known Pitfalls
+## 6. Troubleshooting & Known Pitfalls
 
 ### TLS Root CA Pinning (`UNKNOWN_CA`)
 
@@ -99,7 +109,7 @@ Once the first telemetry payload arrives, Home Assistant MQTT Auto-Discovery aut
 - **Cause**: Some appliance firmware versions embed public Root CAs in flash and reject certificates signed by an unknown local CA.
 - **Checks**:
   1. Confirm firewall rules allow TCP `443` and `8883` from the appliance to `<SPINQ_IP>` so packet drops are not misdiagnosed.
-  2. If `UNKNOWN_CA` persists, place the appliance into SoftAP mode (typically holding the Wi-Fi button for 3 seconds) and inspect local provisioning with:
+  2. If `UNKNOWN_CA` persists, `spinq-provision` provides an experimental SoftAP diagnostic/fallback probe (`192.168.194.1:5500`) after placing the appliance into SoftAP mode (typically holding the Wi-Fi button for 3 seconds). Note that `spinq-provision` is for Root CA pinning diagnostics/testing, not standard initial Wi-Fi onboarding:
      ```bash
      spinq-provision --probe
      ```

@@ -3,7 +3,7 @@ IMAGE ?= ghcr.io/jelmervdm/spinq:dev
 PLATFORMS ?= linux/amd64,linux/arm64
 PYTHON ?= python3
 
-.PHONY: help test lint build build-multiarch run compose-up compose-down clean
+.PHONY: help test lint build build-multiarch run compose-up compose-down release clean
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -28,6 +28,11 @@ compose-up: ## Start spinqd in the background with compose
 
 compose-down: ## Stop spinqd compose stack
 	$(CONTAINER_ENGINE) compose -f compose.yaml down
+
+release: ## Tag and push v$(VERSION) to trigger GHCR and GitHub Release
+	@test -n "$(VERSION)" || (echo "Usage: make release VERSION=0.1.1" && exit 1)
+	git tag -a "v$(VERSION)" -m "v$(VERSION)"
+	git push origin "v$(VERSION)"
 
 clean: ## Remove build artifacts and local caches
 	rm -rf build dist *.egg-info .pytest_cache __pycache__ src/spinq/__pycache__ tests/__pycache__

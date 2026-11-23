@@ -10,6 +10,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional existing git tag (e.g., v0.1.0) to publish as a GitHub Release"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -63,6 +69,8 @@ jobs:
     name: Build & Publish Container
     needs: [lint, test]
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -118,3 +126,60 @@ jobs:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+  release:
+    name: Publish GitHub Release
+    needs: [container]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository with tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and checkout release tag
+        id: tag
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${RELEASE_TAG}"
+          fi
+          git rev-parse --verify "refs/tags/${TAG}" >/dev/null
+          git checkout "refs/tags/${TAG}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${TAG#v}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Python distribution packages
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          IMAGE_DIGEST: ${{ needs.container.outputs.digest }}
+        run: |
+          REPO_LOWER="${GITHUB_REPOSITORY,,}"
+          HEADER="### Container Image\n\n\`\`\`bash\ndocker pull ghcr.io/${REPO_LOWER}:${VERSION}\n\`\`\`"
+          if [[ -n "${IMAGE_DIGEST}" && "${GITHUB_REF}" == refs/tags/v* ]]; then
+            HEADER="${HEADER}\n\nDigest: \`${IMAGE_DIGEST}\`"
+          fi
+          NOTES_HEADER="$(printf '%b' "${HEADER}")"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" dist/* --clobber
+          else
+            gh release create "${TAG}" dist/* --title "${TAG}" --generate-notes --notes "${NOTES_HEADER}"
+          fi
