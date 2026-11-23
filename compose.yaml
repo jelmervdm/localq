@@ -1,0 +1,21 @@
+services:
+  spinq:
+    image: ghcr.io/jelmervdm/spinq:latest
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: spinqd
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "443:8443"
+      - "8883:8883"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - spinq-certs:/data/certs
+
+volumes:
+  spinq-certs:

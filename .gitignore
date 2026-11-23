@@ -1,0 +1,19 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Runtime state, certificates, and secrets
+.env
+certs/
+data/
+*.pem
+*.key
+*.crt
+*.csr
+*.srl
+*.log

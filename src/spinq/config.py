@@ -1,0 +1,100 @@
+"""Environment-driven configuration for the spinqd emulator and Home Assistant bridge."""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+# Optional default mapping of appliance IP or device ID to role ("washer" | "dryer").
+# Configure per-deployment via the SPINQ_KNOWN_APPLIANCES JSON environment variable.
+DEFAULT_KNOWN_APPLIANCES: dict[str, str] = {}
+
+
+def _parse_known_appliances(raw_value: str | None) -> dict[str, str]:
+    """Parse JSON mapping of appliance IP/ID identifiers to appliance types.
+
+    Args:
+        raw_value: Optional JSON string from ``SPINQ_KNOWN_APPLIANCES``.
+
+    Returns:
+        Normalized mapping of identifier string to lowercase appliance type
+        (``"washer"`` or ``"dryer"``).
+    """
+    if not raw_value:
+        return dict(DEFAULT_KNOWN_APPLIANCES)
+
+    parsed = json.loads(raw_value)
+    if not isinstance(parsed, dict):
+        raise ValueError("SPINQ_KNOWN_APPLIANCES must be a JSON object")
+
+    return {
+        str(key).strip(): str(value).strip().lower()
+        for key, value in parsed.items()
+        if str(key).strip()
+    }
+
+
+@dataclass(slots=True)
+class SpinQConfig:
+    """Runtime configuration for the ``spinqd`` server and Home Assistant bridge.
+
+    Attributes:
+        bind_host: Network interface address to bind the HTTPS and MQTT-TLS servers.
+        https_port: Local TCP port for the HTTPS dispatch listener (mapped from 443).
+        mqtt_tls_port: Local TCP port for the MQTT-over-TLS broker listener (8883).
+        public_host: Hostname or IP advertised in HTTPS ``/route`` dispatch payloads.
+        certs_dir: Directory where the local Root CA and SNI leaf certs are persisted.
+        ha_mqtt_host: Hostname or IP of the Home Assistant Mosquitto broker.
+        ha_mqtt_port: Port of the Home Assistant Mosquitto broker.
+        ha_mqtt_user: Optional MQTT username for Home Assistant Mosquitto.
+        ha_mqtt_password: Optional MQTT password for Home Assistant Mosquitto.
+        ha_discovery_prefix: Home Assistant MQTT Auto-Discovery topic prefix.
+        log_level: Python logging level name (e.g., ``INFO``, ``DEBUG``).
+        known_appliances: Mapping from client IP or device ID to ``washer``/``dryer``.
+    """
+
+    bind_host: str = "0.0.0.0"
+    https_port: int = 8443
+    mqtt_tls_port: int = 8883
+    public_host: str = "common.iot.aic.lgthinq.com"
+    certs_dir: Path = Path("/tmp/spinq-certs")
+    ha_mqtt_host: str = "127.0.0.1"
+    ha_mqtt_port: int = 1883
+    ha_mqtt_user: str | None = None
+    ha_mqtt_password: str | None = None
+    ha_discovery_prefix: str = "homeassistant"
+    log_level: str = "INFO"
+    known_appliances: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_KNOWN_APPLIANCES)
+    )
+
+    @classmethod
+    def from_env(cls, env: dict[str, str] | None = None) -> SpinQConfig:
+        """Construct configuration from process environment variables.
+
+        Args:
+            env: Optional mapping overriding ``os.environ`` for testing.
+
+        Returns:
+            Populated :class:`SpinQConfig` instance.
+        """
+        source = os.environ if env is None else env
+        return cls(
+            bind_host=source.get("SPINQ_BIND_HOST", "0.0.0.0"),
+            https_port=int(source.get("SPINQ_HTTPS_PORT", "8443")),
+            mqtt_tls_port=int(source.get("SPINQ_MQTT_TLS_PORT", "8883")),
+            public_host=source.get("SPINQ_PUBLIC_HOST", "common.iot.aic.lgthinq.com"),
+            certs_dir=Path(source.get("SPINQ_CERTS_DIR", "/tmp/spinq-certs")),
+            ha_mqtt_host=source.get("HA_MQTT_HOST", "127.0.0.1"),
+            ha_mqtt_port=int(source.get("HA_MQTT_PORT", "1883")),
+            ha_mqtt_user=source.get("HA_MQTT_USER") or None,
+            ha_mqtt_password=source.get("HA_MQTT_PASSWORD") or None,
+            ha_discovery_prefix=source.get("HA_MQTT_DISCOVERY_PREFIX", "homeassistant"),
+            log_level=source.get("SPINQ_LOG_LEVEL", "INFO").upper(),
+            known_appliances=_parse_known_appliances(
+                source.get("SPINQ_KNOWN_APPLIANCES")
+            ),
+        )
