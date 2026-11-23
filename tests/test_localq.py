@@ -281,7 +281,11 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(b"200 OK", raw_http)
                 body = json.loads(raw_http.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
                 self.assertEqual(body["resultCode"], "0000")
-                self.assertIn("common.iot.aic.lgthinq.com", body["result"]["mqttServer"])
+                self.assertEqual(body["result"]["apiServer"], "https://common.iot.aic.lgthinq.com")
+                self.assertEqual(
+                    body["result"]["mqttServer"],
+                    "ssl://common.iot.aic.lgthinq.com:8883",
+                )
 
                 # 2. Simulate appliance MQTT-TLS session to common.iot.aic.lgthinq.com
                 m_reader, m_writer = await asyncio.open_connection(
@@ -367,14 +371,20 @@ class TestConfig(unittest.TestCase):
         empty_cfg = LocalQConfig.from_env({})
         self.assertEqual(empty_cfg.known_appliances, {})
         self.assertEqual(empty_cfg.ha_mqtt_host, "127.0.0.1")
+        self.assertEqual(empty_cfg.public_https_port, 443)
+        self.assertEqual(empty_cfg.public_mqtt_tls_port, 8883)
 
         custom_cfg = LocalQConfig.from_env(
             {
                 "HA_MQTT_HOST": "192.0.2.10",
+                "LOCALQ_PUBLIC_HTTPS_PORT": "8443",
+                "LOCALQ_PUBLIC_MQTT_TLS_PORT": "9883",
                 "LOCALQ_KNOWN_APPLIANCES": '{"192.0.2.20":"Washer","dryer-01":"DRYER"}',
             }
         )
         self.assertEqual(custom_cfg.ha_mqtt_host, "192.0.2.10")
+        self.assertEqual(custom_cfg.public_https_port, 8443)
+        self.assertEqual(custom_cfg.public_mqtt_tls_port, 9883)
         self.assertEqual(
             custom_cfg.known_appliances,
             {"192.0.2.20": "washer", "dryer-01": "dryer"},

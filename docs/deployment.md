@@ -28,6 +28,87 @@ Appliances connect to `localqd` over TLS using the standard ThinQ cloud ports (`
 > [!NOTE]
 > If your appliances live on an isolated IoT VLAN, ensure your firewall allows `443/tcp` and `8883/tcp` from the appliances to `localqd`, and allows `localqd` to reach Mosquitto on `1883/tcp`.
 
+### Exposing Port 443 (Reverse Proxy, Dedicated IP, & Rootless Hosts)
+
+Appliances hardcode `https://aic-common.lgthinq.com` on **TCP `443`**, and DNS `A` records cannot specify a port. Therefore `<LOCALQ_IP>` must accept TLS traffic on port `443` (forwarding to `localqd`'s non-privileged port `8443`). Choose whichever pattern fits your environment:
+
+#### Option 1: Dedicated IP (Recommended)
+
+- **Kubernetes**: Deploy with a `LoadBalancer` `Service` (MetalLB, Klipper, etc.) so `localq` receives its own LAN IP exposing `443 -> 8443` and `8883 -> 8883`.
+- **Docker / Podman**: Assign a secondary IP alias on your host NIC (or use a `macvlan` network) and bind only that IP in `compose.yaml`:
+  ```yaml
+  ports:
+    - "<DEDICATED_IP>:443:8443"
+    - "<DEDICATED_IP>:8883:8883"
+  ```
+
+#### Option 2: Share Port 443 via Reverse Proxy (Layer 4 TLS SNI Passthrough)
+
+> [!IMPORTANT]
+> Standard Layer 7 HTTP reverse proxies (terminating TLS) **will not work** because `localqd` dynamically mints per-SNI certificates and also accepts MQTT-over-443 (`ALPN: x-amzn-mqtt-ca`). Configure **Layer 4 TCP / TLS SNI passthrough** without terminating TLS.
+
+- **Nginx (`stream` module with `ssl_preread`)**:
+  ```nginx
+  stream {
+      map $ssl_preread_server_name $localq_upstream {
+          aic-common.lgthinq.com        127.0.0.1:8443;
+          common.iot.aic.lgthinq.com    127.0.0.1:8443;
+          default                       127.0.0.1:8444; # your existing HTTPS proxy
+      }
+
+      server {
+          listen 443;
+          ssl_preread on;
+          proxy_pass $localq_upstream;
+      }
+  }
+  ```
+- **Traefik (dynamic TCP router)**:
+  ```yaml
+  tcp:
+    routers:
+      localq-https:
+        entryPoints: ["websecure"]
+        rule: "HostSNI(`aic-common.lgthinq.com`) || HostSNI(`common.iot.aic.lgthinq.com`)"
+        tls:
+          passthrough: true
+        service: localq-https
+    services:
+      localq-https:
+        loadBalancer:
+          servers:
+            - address: "localq:8443"
+  ```
+- **HAProxy (`mode tcp`)**:
+  ```haproxy
+  frontend https_passthrough
+      bind *:443
+      mode tcp
+      tcp-request inspect-delay 5s
+      tcp-request content accept if { req_ssl_hello_type 1 }
+      acl is_thinq req.ssl_sni -i aic-common.lgthinq.com common.iot.aic.lgthinq.com
+      use_backend localq_backend if is_thinq
+      default_backend web_backend
+
+  backend localq_backend
+      mode tcp
+      server localq 127.0.0.1:8443
+  ```
+
+Ensure port **`8883`** (`common.iot.aic.lgthinq.com:8883`) is also reachable directly or forwarded via TCP passthrough to `localqd:8883`.
+
+#### Option 3: Rootless Podman / Non-Root Linux Workstations
+
+Non-root users cannot bind ports below `1024` by default. If running rootless Podman/Docker directly on port `443`:
+
+```bash
+sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+# Persist across reboots:
+echo "net.ipv4.ip_unprivileged_port_start=443" | sudo tee /etc/sysctl.d/99-localq-ports.conf
+```
+
+Alternatively, run with rootful Docker/Podman or redirect incoming `:443` to `:8443` via host firewall DNAT rules.
+
 ## 3. Deploy `localqd`
 
 ### Option A: Docker / Podman Compose

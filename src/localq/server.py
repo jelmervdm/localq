@@ -333,8 +333,8 @@ class LocalQServer:
             else:
                 resp_payload = build_dispatch_response(
                     public_host=self.config.public_host,
-                    https_port=self.config.https_port,
-                    mqtt_tls_port=self.config.mqtt_tls_port,
+                    https_port=self.config.public_https_port,
+                    mqtt_tls_port=self.config.public_mqtt_tls_port,
                 )
 
             encoded_body = json.dumps(resp_payload).encode("utf-8")

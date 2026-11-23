@@ -46,6 +46,8 @@ class LocalQConfig:
         https_port: Local TCP port for the HTTPS dispatch listener (mapped from 443).
         mqtt_tls_port: Local TCP port for the MQTT-over-TLS broker listener (8883).
         public_host: Hostname or IP advertised in HTTPS ``/route`` dispatch payloads.
+        public_https_port: External HTTPS port advertised in ``/route`` dispatch payloads.
+        public_mqtt_tls_port: External MQTT-TLS port advertised in ``/route`` dispatch payloads.
         certs_dir: Directory where the local Root CA and SNI leaf certs are persisted.
         ha_mqtt_host: Hostname or IP of the Home Assistant Mosquitto broker.
         ha_mqtt_port: Port of the Home Assistant Mosquitto broker.
@@ -60,6 +62,8 @@ class LocalQConfig:
     https_port: int = 8443
     mqtt_tls_port: int = 8883
     public_host: str = "common.iot.aic.lgthinq.com"
+    public_https_port: int = 443
+    public_mqtt_tls_port: int = 8883
     certs_dir: Path = Path("/tmp/localq-certs")
     ha_mqtt_host: str = "127.0.0.1"
     ha_mqtt_port: int = 1883
@@ -87,6 +91,8 @@ class LocalQConfig:
             https_port=int(source.get("LOCALQ_HTTPS_PORT", "8443")),
             mqtt_tls_port=int(source.get("LOCALQ_MQTT_TLS_PORT", "8883")),
             public_host=source.get("LOCALQ_PUBLIC_HOST", "common.iot.aic.lgthinq.com"),
+            public_https_port=int(source.get("LOCALQ_PUBLIC_HTTPS_PORT", "443")),
+            public_mqtt_tls_port=int(source.get("LOCALQ_PUBLIC_MQTT_TLS_PORT", "8883")),
             certs_dir=Path(source.get("LOCALQ_CERTS_DIR", "/tmp/localq-certs")),
             ha_mqtt_host=source.get("HA_MQTT_HOST", "127.0.0.1"),
             ha_mqtt_port=int(source.get("HA_MQTT_PORT", "1883")),

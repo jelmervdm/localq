@@ -10,6 +10,8 @@ data:
   LOCALQ_HTTPS_PORT: "8443"
   LOCALQ_MQTT_TLS_PORT: "8883"
   LOCALQ_PUBLIC_HOST: "common.iot.aic.lgthinq.com"
+  LOCALQ_PUBLIC_HTTPS_PORT: "443"
+  LOCALQ_PUBLIC_MQTT_TLS_PORT: "8883"
   LOCALQ_CERTS_DIR: "/data/certs"
   LOCALQ_LOG_LEVEL: "INFO"
   # Replace with your Home Assistant Mosquitto service DNS name or LAN IP

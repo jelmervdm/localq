@@ -72,6 +72,8 @@ Point the ThinQ endpoints in your local DNS server (Pi-hole, AdGuard Home, Unbou
 
 > [!NOTE]
 > Appliances outside the US region may query regional prefixes (for example, `eic` or `kic` instead of `aic`). `tls_ca.py` dynamically mints SNI certificates for any queried ThinQ hostname (with pre-warmed fallback SANs for `*.lgthinq.com`, `*.iot.aic.lgthinq.com`, `*.lgeapi.com`, and `*.smartthinq.com`).
+>
+> Because appliances hardcode port `443`, `<LOCALQ_IP>` must accept TCP `443` (directly, on a dedicated IP, or via an existing reverse proxy using **Layer 4 TLS SNI passthrough** — not HTTP TLS termination). See [Exposing Port 443 & Reverse Proxy Setup](docs/deployment.md#exposing-port-443-reverse-proxy-dedicated-ip--rootless-hosts).
 
 For full self-hosting, Kubernetes, local DNS override, and troubleshooting steps, see the [Deployment & Self-Hosting Guide](docs/deployment.md).
 
@@ -83,6 +85,8 @@ For full self-hosting, Kubernetes, local DNS override, and troubleshooting steps
 | `LOCALQ_HTTPS_PORT` | `8443` | Local HTTPS dispatch port (expose externally as `443`). |
 | `LOCALQ_MQTT_TLS_PORT` | `8883` | Local MQTT-over-TLS broker port (`8883`). |
 | `LOCALQ_PUBLIC_HOST` | `common.iot.aic.lgthinq.com` | Hostname or IP advertised in `/route` dispatch responses. |
+| `LOCALQ_PUBLIC_HTTPS_PORT` | `443` | External HTTPS port advertised in `/route` dispatch responses. |
+| `LOCALQ_PUBLIC_MQTT_TLS_PORT` | `8883` | External MQTT-TLS port advertised in `/route` dispatch responses. |
 | `LOCALQ_CERTS_DIR` | `/tmp/localq-certs` (`/data/certs` in container) | Directory where `ca.crt`, `ca.key`, and leaf certificates are stored. |
 | `LOCALQ_LOG_LEVEL` | `INFO` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
 | `HA_MQTT_HOST` | `127.0.0.1` | Hostname or IP of your Home Assistant Mosquitto broker. |
