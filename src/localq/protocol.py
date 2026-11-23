@@ -101,7 +101,7 @@ class ApplianceState:
 
     device_id: str
     appliance_type: str = "washer"
-    model_name: str = "SpinQ_Laundry_v2"
+    model_name: str = "LocalQ_Appliance_v2"
     current_state: str = RunState.POWER_OFF
     remote_control_enabled: bool = False
     remain_hour: int = 0
@@ -370,6 +370,6 @@ def build_dispatch_response(
             "apiServer": api_base,
             "mqttServer": mqtt_uri,
             "rtiUri": mqtt_uri,
-            "appVersion": "spinq-0.1.0",
+            "appVersion": "localq-0.1.0",
         },
     }

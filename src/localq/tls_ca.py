@@ -109,8 +109,8 @@ class LocalCertificateAuthority:
                 "x509_extensions = v3_ca\n"
                 "prompt = no\n"
                 "[dn]\n"
-                "CN = SpinQ Local Root CA\n"
-                "O = spinq\n"
+                "CN = LocalQ Root CA\n"
+                "O = localq\n"
                 "[v3_ca]\n"
                 "basicConstraints = critical,CA:TRUE\n"
                 "keyUsage = critical,keyCertSign,cRLSign\n"
@@ -139,7 +139,7 @@ class LocalCertificateAuthority:
         finally:
             ext_path.unlink(missing_ok=True)
 
-        LOGGER.info("Generated local SpinQ Root CA at %s", ca_crt)
+        LOGGER.info("Generated LocalQ Root CA at %s", ca_crt)
         return ca_crt, ca_key
 
     def prewarm_defaults(self) -> None:
@@ -279,7 +279,7 @@ class LocalCertificateAuthority:
                     "-out",
                     str(csr_path),
                     "-subj",
-                    f"/CN={hostname}/O=spinq",
+                    f"/CN={hostname}/O=localq",
                 ]
             )
             _run_openssl(

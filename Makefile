@@ -1,5 +1,5 @@
 CONTAINER_ENGINE ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
-IMAGE ?= ghcr.io/jelmervdm/spinq:dev
+IMAGE ?= ghcr.io/jelmervdm/localq:dev
 PLATFORMS ?= linux/amd64,linux/arm64
 PYTHON ?= python3
 
@@ -20,13 +20,13 @@ build: ## Build local OCI container image
 build-multiarch: ## Build multi-arch OCI container image (amd64 + arm64)
 	docker buildx build --platform $(PLATFORMS) -t $(IMAGE) -f Containerfile .
 
-run: ## Run spinqd locally via Python
-	PYTHONPATH=src $(PYTHON) -m spinq.server
+run: ## Run localqd locally via Python
+	PYTHONPATH=src $(PYTHON) -m localq.server
 
-compose-up: ## Start spinqd in the background with compose
+compose-up: ## Start localqd in the background with compose
 	$(CONTAINER_ENGINE) compose -f compose.yaml up -d --build
 
-compose-down: ## Stop spinqd compose stack
+compose-down: ## Stop localqd compose stack
 	$(CONTAINER_ENGINE) compose -f compose.yaml down
 
 release: ## Tag and push v$(VERSION) to trigger GHCR and GitHub Release
@@ -35,4 +35,4 @@ release: ## Tag and push v$(VERSION) to trigger GHCR and GitHub Release
 	git push origin "v$(VERSION)"
 
 clean: ## Remove build artifacts and local caches
-	rm -rf build dist *.egg-info .pytest_cache __pycache__ src/spinq/__pycache__ tests/__pycache__
+	rm -rf build dist *.egg-info .pytest_cache __pycache__ src/localq/__pycache__ tests/__pycache__

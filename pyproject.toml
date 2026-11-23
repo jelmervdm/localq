@@ -3,14 +3,14 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "spinq"
+name = "localq"
 version = "0.1.0"
-description = "Local smart-laundry cloud emulator and Home Assistant MQTT auto-discovery bridge"
+description = "Local smart-appliance cloud emulator and Home Assistant MQTT auto-discovery bridge"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Jelmer van der Meer" }]
-keywords = ["home-assistant", "mqtt", "laundry", "iot", "local-control"]
+keywords = ["home-assistant", "mqtt", "smart-appliances", "laundry", "iot", "local-control"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: End Users/Desktop",
@@ -25,13 +25,13 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/jelmervdm/spinq"
-Repository = "https://github.com/jelmervdm/spinq"
-Issues = "https://github.com/jelmervdm/spinq/issues"
+Homepage = "https://github.com/jelmervdm/localq"
+Repository = "https://github.com/jelmervdm/localq"
+Issues = "https://github.com/jelmervdm/localq/issues"
 
 [project.scripts]
-spinqd = "spinq.server:main"
-spinq-provision = "spinq.softap_provision:main"
+localqd = "localq.server:main"
+localq-provision = "localq.softap_provision:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

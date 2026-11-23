@@ -10,7 +10,7 @@ Please **do not** open a public GitHub issue for security vulnerabilities.
 
 Instead, report vulnerabilities privately through GitHub Security Advisories:
 
-- Navigate to **Security -> Advisories -> Report a vulnerability** in this repository (`https://github.com/jelmervdm/spinq/security/advisories/new`).
+- Navigate to **Security -> Advisories -> Report a vulnerability** in this repository (`https://github.com/jelmervdm/localq/security/advisories/new`).
 
 Include:
 

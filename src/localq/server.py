@@ -10,9 +10,9 @@ import ssl
 from dataclasses import dataclass, field
 from typing import Any
 
-from spinq.config import SpinQConfig
-from spinq.ha_mqtt import HADiscoveryBridge
-from spinq.mqtt_codec import (
+from localq.config import LocalQConfig
+from localq.ha_mqtt import HADiscoveryBridge
+from localq.mqtt_codec import (
     MqttCodecError,
     PacketType,
     decode_connect,
@@ -25,14 +25,14 @@ from spinq.mqtt_codec import (
     encode_suback,
     read_mqtt_packet,
 )
-from spinq.protocol import (
+from localq.protocol import (
     ApplianceState,
     OperationMode,
     build_dispatch_response,
     build_operation_command,
     parse_appliance_telemetry,
 )
-from spinq.tls_ca import LocalCertificateAuthority
+from localq.tls_ca import LocalCertificateAuthority
 
 LOGGER = logging.getLogger(__name__)
 
@@ -59,8 +59,8 @@ class ApplianceSession:
         return f"thinq/device/{self.device_id}/control"
 
 
-class SpinQServer:
-    """Local smart-laundry gateway hosting HTTPS dispatch (:8443) and MQTT-TLS (:8883).
+class LocalQServer:
+    """Local smart-appliance gateway hosting HTTPS dispatch (:8443) and MQTT-TLS (:8883).
 
     On port ``8443`` (typically mapped from ``443``), incoming TLS streams inspect
     the first application bytes so both HTTPS dispatch requests (for
@@ -70,11 +70,11 @@ class SpinQServer:
 
     def __init__(
         self,
-        config: SpinQConfig,
+        config: LocalQConfig,
         bridge: HADiscoveryBridge | None = None,
         enable_ha_client: bool = True,
     ) -> None:
-        """Initialize the local ``spinqd`` server.
+        """Initialize the local ``localqd`` server.
 
         Args:
             config: Runtime server and Home Assistant MQTT configuration.
@@ -125,7 +125,7 @@ class SpinQServer:
             self._ha_task = asyncio.create_task(self.bridge.run_forever())
 
         LOGGER.info(
-            "spinqd listening on https=%s:%d mqtt_tls=%s:%d public_host=%s",
+            "localqd listening on https=%s:%d mqtt_tls=%s:%d public_host=%s",
             self.config.bind_host,
             self.config.https_port,
             self.config.bind_host,
@@ -230,7 +230,7 @@ class SpinQServer:
                 if "UNKNOWN_CA" in msg.upper() or "CERTIFICATE" in msg.upper():
                     LOGGER.warning(
                         "TLS handshake aborted by peer (%s) — appliance likely pins Root CA in firmware; "
-                        "use SoftAP provisioning (`spinq-provision`) if persistent.",
+                        "use SoftAP provisioning (`localq-provision`) if persistent.",
                         msg,
                     )
                     return
@@ -320,7 +320,7 @@ class SpinQServer:
             }
             self.captured_http_requests.append(record)
             LOGGER.info(
-                "SpinQ HTTPS request peer=%s host=%s %s %s body_len=%d",
+                "LocalQ HTTPS request peer=%s host=%s %s %s body_len=%d",
                 peer_ip,
                 headers.get("host", "<none>"),
                 method,
@@ -535,8 +535,8 @@ async def _safe_close(writer: asyncio.StreamWriter) -> None:
         pass
 
 
-async def _serve_until_signal(config: SpinQConfig) -> None:
-    server = SpinQServer(config=config)
+async def _serve_until_signal(config: LocalQConfig) -> None:
+    server = LocalQServer(config=config)
     await server.start()
 
     stop_event = asyncio.Event()
@@ -552,8 +552,8 @@ async def _serve_until_signal(config: SpinQConfig) -> None:
 
 
 def main() -> None:
-    """CLI entrypoint launching the ``spinqd`` daemon."""
-    config = SpinQConfig.from_env()
+    """CLI entrypoint launching the ``localqd`` daemon."""
+    config = LocalQConfig.from_env()
     logging.basicConfig(
         level=getattr(logging, config.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",

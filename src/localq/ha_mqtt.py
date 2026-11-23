@@ -8,8 +8,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from spinq.config import SpinQConfig
-from spinq.mqtt_codec import (
+from localq.config import LocalQConfig
+from localq.mqtt_codec import (
     PacketType,
     decode_publish,
     encode_connect,
@@ -20,7 +20,7 @@ from spinq.mqtt_codec import (
     encode_subscribe,
     read_mqtt_packet,
 )
-from spinq.protocol import ApplianceState, OperationMode
+from localq.protocol import ApplianceState, OperationMode
 
 LOGGER = logging.getLogger(__name__)
 
@@ -161,11 +161,11 @@ class HADiscoveryBridge:
     and ``binary_sensor.front_load_washer_run_completed``).
     """
 
-    BRIDGE_STATUS_TOPIC = "spinq/bridge/status"
+    BRIDGE_STATUS_TOPIC = "localq/bridge/status"
 
     def __init__(
         self,
-        config: SpinQConfig,
+        config: LocalQConfig,
         command_callback: CommandCallback | None = None,
     ) -> None:
         """Initialize the Home Assistant MQTT discovery bridge.
@@ -194,15 +194,15 @@ class HADiscoveryBridge:
             List of ``(discovery_topic, config_payload_dict)`` pairs.
         """
         slug = state.slug
-        base_topic = f"spinq/{slug}"
+        base_topic = f"localq/{slug}"
         friendly_device = "Dryer" if state.appliance_type == "dryer" else "Front Load Washer"
 
         device_block = {
-            "identifiers": [f"spinq_{state.device_id}", f"spinq_{slug}"],
+            "identifiers": [f"localq_{state.device_id}", f"localq_{slug}"],
             "name": friendly_device,
             "manufacturer": "LG Electronics",
             "model": state.model_name,
-            "via_device": "spinq_bridge",
+            "via_device": "localq_bridge",
         }
 
         specs = list(_COMMON_ENTITIES)
@@ -212,10 +212,10 @@ class HADiscoveryBridge:
         messages: list[tuple[str, dict[str, Any]]] = []
         for spec in specs:
             object_id = f"{slug}_{spec.object_suffix}"
-            unique_id = f"spinq_{state.device_id}_{spec.object_suffix}"
+            unique_id = f"localq_{state.device_id}_{spec.object_suffix}"
             topic = (
                 f"{self.config.ha_discovery_prefix}/{spec.component}/"
-                f"spinq_{slug}/{spec.object_suffix}/config"
+                f"localq_{slug}/{spec.object_suffix}/config"
             )
             payload: dict[str, Any] = {
                 "name": spec.name,
@@ -245,7 +245,7 @@ class HADiscoveryBridge:
         Returns:
             List of ``(topic, payload_string)`` pairs.
         """
-        base_topic = f"spinq/{state.slug}"
+        base_topic = f"localq/{state.slug}"
         power_value = "OFF" if state.current_state == "power_off" else "ON"
         operation_value = "power_off" if state.current_state == "power_off" else (
             "stop" if state.current_state == "pause" else "start"
@@ -288,11 +288,11 @@ class HADiscoveryBridge:
         """Parse an incoming MQTT command message from Home Assistant and dispatch it.
 
         Args:
-            topic: Command topic (e.g., ``spinq/dryer/cmd/operation``).
+            topic: Command topic (e.g., ``localq/dryer/cmd/operation``).
             payload: Raw MQTT message payload bytes.
         """
         parts = topic.split("/")
-        if len(parts) != 4 or parts[0] != "spinq" or parts[2] != "cmd":
+        if len(parts) != 4 or parts[0] != "localq" or parts[2] != "cmd":
             return
 
         slug = parts[1]
@@ -363,7 +363,7 @@ class HADiscoveryBridge:
         self._discovered_slugs.clear()
 
         connect_pkt = encode_connect(
-            client_id="spinq-bridge",
+            client_id="localq-bridge",
             keepalive=30,
             clean_session=True,
             username=self.config.ha_mqtt_user,
@@ -390,7 +390,7 @@ class HADiscoveryBridge:
         )
         await self._publish_raw(self.BRIDGE_STATUS_TOPIC, "online", retain=True)
 
-        sub_pkt = encode_subscribe(self._next_packet_id(), [("spinq/+/cmd/+", 0)])
+        sub_pkt = encode_subscribe(self._next_packet_id(), [("localq/+/cmd/+", 0)])
         async with self._write_lock:
             writer.write(sub_pkt)
             await writer.drain()

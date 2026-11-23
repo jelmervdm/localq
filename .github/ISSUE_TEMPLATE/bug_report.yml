@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug or unexpected behavior in spinq
+description: Report a bug or unexpected behavior in localq
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -26,12 +26,12 @@ body:
     attributes:
       label: Deployment method & version
       description: e.g., Docker Compose, Kubernetes, or local Python 3.12; image tag or commit SHA
-      placeholder: "ghcr.io/jelmervdm/spinq:latest on Docker Compose"
+      placeholder: "ghcr.io/jelmervdm/localq:latest on Docker Compose"
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
       label: Relevant logs (sanitized)
-      description: Paste sanitized `spinqd` logs (with `SPINQ_LOG_LEVEL=DEBUG` if possible).
+      description: Paste sanitized `localqd` logs (with `LOCALQ_LOG_LEVEL=DEBUG` if possible).
       render: text

@@ -1,10 +1,10 @@
 services:
-  spinq:
-    image: ghcr.io/jelmervdm/spinq:latest
+  localq:
+    image: ghcr.io/jelmervdm/localq:latest
     build:
       context: .
       dockerfile: Containerfile
-    container_name: spinqd
+    container_name: localqd
     restart: unless-stopped
     env_file:
       - .env
@@ -15,7 +15,7 @@ services:
     tmpfs:
       - /tmp
     volumes:
-      - spinq-certs:/data/certs
+      - localq-certs:/data/certs
 
 volumes:
-  spinq-certs:
+  localq-certs:

@@ -78,7 +78,7 @@ def send_softap_packet(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entrypoint for ``spinq-provision``."""
+    """CLI entrypoint for ``localq-provision``."""
     parser = argparse.ArgumentParser(
         description="Probe or provision an LG appliance while in SoftAP mode (192.168.194.1:5500).",
     )

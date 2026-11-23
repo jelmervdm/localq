@@ -1,4 +1,4 @@
-"""Unit and async loopback integration tests for spinq."""
+"""Unit and async loopback integration tests for localq."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spinq.config import SpinQConfig
-from spinq.ha_mqtt import HADiscoveryBridge
-from spinq.mqtt_codec import (
+from localq.config import LocalQConfig
+from localq.ha_mqtt import HADiscoveryBridge
+from localq.mqtt_codec import (
     PacketType,
     decode_connect,
     decode_publish,
@@ -24,18 +24,18 @@ from spinq.mqtt_codec import (
     encode_subscribe,
     read_mqtt_packet,
 )
-from spinq.protocol import (
+from localq.protocol import (
     OperationMode,
     build_dispatch_response,
     build_operation_command,
     parse_appliance_telemetry,
 )
-from spinq.server import SpinQServer
-from spinq.softap_provision import (
+from localq.server import LocalQServer
+from localq.softap_provision import (
     build_softap_probe_payload,
     build_softap_provision_payload,
 )
-from spinq.tls_ca import LocalCertificateAuthority, normalize_sni_hostname
+from localq.tls_ca import LocalCertificateAuthority, normalize_sni_hostname
 
 
 class TestCertificateAuthority(unittest.TestCase):
@@ -79,9 +79,9 @@ class TestMqttCodec(unittest.IsolatedAsyncioTestCase):
         connect_raw = encode_connect(
             client_id="dryer-test-client-01",
             keepalive=60,
-            username="spinq-user",
+            username="localq-user",
             password="secret",
-            will_topic="spinq/bridge/status",
+            will_topic="localq/bridge/status",
             will_message=b"offline",
         )
         sub_raw = encode_subscribe(42, [("thinq/device/test/control", 1)])
@@ -96,9 +96,9 @@ class TestMqttCodec(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ptype, PacketType.CONNECT)
         conn = decode_connect(body)
         self.assertEqual(conn.client_id, "dryer-test-client-01")
-        self.assertEqual(conn.username, "spinq-user")
+        self.assertEqual(conn.username, "localq-user")
         self.assertEqual(conn.password, "secret")
-        self.assertEqual(conn.will_topic, "spinq/bridge/status")
+        self.assertEqual(conn.will_topic, "localq/bridge/status")
 
         ptype, _flags, body = await read_mqtt_packet(reader)
         self.assertEqual(ptype, PacketType.SUBSCRIBE)
@@ -159,17 +159,17 @@ class TestProtocolAndDiscovery(unittest.TestCase):
         self.assertEqual(state.total_time_minutes, 65)
         self.assertFalse(state.run_completed)
 
-        bridge = HADiscoveryBridge(SpinQConfig())
+        bridge = HADiscoveryBridge(LocalQConfig())
         discovery = dict(bridge.build_discovery_messages(state))
-        self.assertIn("homeassistant/sensor/spinq_dryer/current_status/config", discovery)
+        self.assertIn("homeassistant/sensor/localq_dryer/current_status/config", discovery)
         self.assertEqual(
-            discovery["homeassistant/sensor/spinq_dryer/current_status/config"][
+            discovery["homeassistant/sensor/localq_dryer/current_status/config"][
                 "default_entity_id"
             ],
             "sensor.dryer_current_status",
         )
         self.assertEqual(
-            discovery["homeassistant/select/spinq_dryer/operation/config"][
+            discovery["homeassistant/select/localq_dryer/operation/config"][
                 "default_entity_id"
             ],
             "select.dryer_operation",
@@ -202,11 +202,11 @@ class TestProtocolAndDiscovery(unittest.TestCase):
         self.assertTrue(state.run_completed)
         self.assertTrue(state.door_locked)
 
-        bridge = HADiscoveryBridge(SpinQConfig())
+        bridge = HADiscoveryBridge(LocalQConfig())
         discovery = dict(bridge.build_discovery_messages(state))
         self.assertEqual(
             discovery[
-                "homeassistant/binary_sensor/spinq_front_load_washer/run_completed/config"
+                "homeassistant/binary_sensor/localq_front_load_washer/run_completed/config"
             ]["default_entity_id"],
             "binary_sensor.front_load_washer_run_completed",
         )
@@ -232,7 +232,7 @@ class TestProtocolAndDiscovery(unittest.TestCase):
 class _RecordingBridge(HADiscoveryBridge):
     """In-memory bridge stand-in capturing published MQTT topics for assertions."""
 
-    def __init__(self, config: SpinQConfig) -> None:
+    def __init__(self, config: LocalQConfig) -> None:
         super().__init__(config=config)
         self.published: list[tuple[str, str]] = []
 
@@ -245,7 +245,7 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
 
     async def test_https_dispatch_and_mqtt_tls_command_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = SpinQConfig(
+            cfg = LocalQConfig(
                 bind_host="127.0.0.1",
                 https_port=0,
                 mqtt_tls_port=0,
@@ -254,7 +254,7 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
                 known_appliances={"127.0.0.1": "dryer"},
             )
             bridge = _RecordingBridge(cfg)
-            server = SpinQServer(config=cfg, bridge=bridge, enable_ha_client=False)
+            server = LocalQServer(config=cfg, bridge=bridge, enable_ha_client=False)
             await server.start()
 
             try:
@@ -325,13 +325,13 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(server.states["dryer-sim-01"].current_state, "running")
                 self.assertTrue(
                     any(
-                        t == "spinq/dryer/current_status" and v == "running"
+                        t == "localq/dryer/current_status" and v == "running"
                         for t, v in bridge.published
                     )
                 )
 
                 # 3. Trigger HA commands -> verify appliance receives STOP and POWER_OFF envelopes
-                await bridge.handle_ha_command("spinq/dryer/cmd/operation", b"stop")
+                await bridge.handle_ha_command("localq/dryer/cmd/operation", b"stop")
                 cmd_pkt = await asyncio.wait_for(read_mqtt_packet(m_reader), timeout=2.0)
                 self.assertEqual(cmd_pkt[0], PacketType.PUBLISH)
                 pub = decode_publish(cmd_pkt[1], cmd_pkt[2])
@@ -339,7 +339,7 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
                 cmd_json = json.loads(pub.payload.decode("utf-8"))
                 self.assertEqual(cmd_json["data"]["command"], "WMStop")
 
-                await bridge.handle_ha_command("spinq/dryer/cmd/power", b"OFF")
+                await bridge.handle_ha_command("localq/dryer/cmd/power", b"OFF")
                 pwr_pkt = await asyncio.wait_for(read_mqtt_packet(m_reader), timeout=2.0)
                 self.assertEqual(pwr_pkt[0], PacketType.PUBLISH)
                 pwr_pub = decode_publish(pwr_pkt[1], pwr_pkt[2])
@@ -364,14 +364,14 @@ class TestConfig(unittest.TestCase):
     """Verify environment configuration defaults and JSON appliance mapping."""
 
     def test_from_env_defaults_and_known_appliances(self) -> None:
-        empty_cfg = SpinQConfig.from_env({})
+        empty_cfg = LocalQConfig.from_env({})
         self.assertEqual(empty_cfg.known_appliances, {})
         self.assertEqual(empty_cfg.ha_mqtt_host, "127.0.0.1")
 
-        custom_cfg = SpinQConfig.from_env(
+        custom_cfg = LocalQConfig.from_env(
             {
                 "HA_MQTT_HOST": "192.0.2.10",
-                "SPINQ_KNOWN_APPLIANCES": '{"192.0.2.20":"Washer","dryer-01":"DRYER"}',
+                "LOCALQ_KNOWN_APPLIANCES": '{"192.0.2.20":"Washer","dryer-01":"DRYER"}',
             }
         )
         self.assertEqual(custom_cfg.ha_mqtt_host, "192.0.2.10")

@@ -63,7 +63,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Verify CLI entrypoint
-        run: spinq-provision --help
+        run: localq-provision --help
 
   container:
     name: Build & Publish Container

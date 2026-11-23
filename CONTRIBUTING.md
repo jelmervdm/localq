@@ -1,10 +1,10 @@
-# Contributing to spinq
+# Contributing to localq
 
-Thank you for your interest in contributing to `spinq`!
+Thank you for your interest in contributing to `localq`!
 
 ## Development Setup
 
-`spinq` uses only the Python 3.11+ standard library at runtime and `/usr/bin/openssl` for TLS certificate generation.
+`localq` uses only the Python 3.11+ standard library at runtime and `/usr/bin/openssl` for TLS certificate generation.
 
 1. Fork and clone the repository.
 2. Run the test suite:
@@ -19,7 +19,7 @@ Thank you for your interest in contributing to `spinq`!
 ## Guidelines
 
 - Keep runtime dependencies at zero (`dependencies = []` in `pyproject.toml`).
-- Add or update unit tests in `tests/test_spinq.py` for any protocol, codec, or Home Assistant MQTT Discovery changes.
+- Add or update unit tests in `tests/test_localq.py` for any protocol, codec, or Home Assistant MQTT Discovery changes.
 - Do not include personal IP addresses, real appliance device IDs, credentials, or internal hostnames in code, tests, or documentation—use RFC 5737 test IP addresses (`192.0.2.0/24`) and synthetic identifiers.
 - Include docstrings on all new public classes and functions.
 

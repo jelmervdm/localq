@@ -1,4 +1,4 @@
-"""Environment-driven configuration for the spinqd emulator and Home Assistant bridge."""
+"""Environment-driven configuration for the localqd emulator and Home Assistant bridge."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 # Optional default mapping of appliance IP or device ID to role ("washer" | "dryer").
-# Configure per-deployment via the SPINQ_KNOWN_APPLIANCES JSON environment variable.
+# Configure per-deployment via the LOCALQ_KNOWN_APPLIANCES JSON environment variable.
 DEFAULT_KNOWN_APPLIANCES: dict[str, str] = {}
 
 
@@ -17,7 +17,7 @@ def _parse_known_appliances(raw_value: str | None) -> dict[str, str]:
     """Parse JSON mapping of appliance IP/ID identifiers to appliance types.
 
     Args:
-        raw_value: Optional JSON string from ``SPINQ_KNOWN_APPLIANCES``.
+        raw_value: Optional JSON string from ``LOCALQ_KNOWN_APPLIANCES``.
 
     Returns:
         Normalized mapping of identifier string to lowercase appliance type
@@ -28,7 +28,7 @@ def _parse_known_appliances(raw_value: str | None) -> dict[str, str]:
 
     parsed = json.loads(raw_value)
     if not isinstance(parsed, dict):
-        raise ValueError("SPINQ_KNOWN_APPLIANCES must be a JSON object")
+        raise ValueError("LOCALQ_KNOWN_APPLIANCES must be a JSON object")
 
     return {
         str(key).strip(): str(value).strip().lower()
@@ -38,8 +38,8 @@ def _parse_known_appliances(raw_value: str | None) -> dict[str, str]:
 
 
 @dataclass(slots=True)
-class SpinQConfig:
-    """Runtime configuration for the ``spinqd`` server and Home Assistant bridge.
+class LocalQConfig:
+    """Runtime configuration for the ``localqd`` server and Home Assistant bridge.
 
     Attributes:
         bind_host: Network interface address to bind the HTTPS and MQTT-TLS servers.
@@ -60,7 +60,7 @@ class SpinQConfig:
     https_port: int = 8443
     mqtt_tls_port: int = 8883
     public_host: str = "common.iot.aic.lgthinq.com"
-    certs_dir: Path = Path("/tmp/spinq-certs")
+    certs_dir: Path = Path("/tmp/localq-certs")
     ha_mqtt_host: str = "127.0.0.1"
     ha_mqtt_port: int = 1883
     ha_mqtt_user: str | None = None
@@ -72,29 +72,29 @@ class SpinQConfig:
     )
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> SpinQConfig:
+    def from_env(cls, env: dict[str, str] | None = None) -> LocalQConfig:
         """Construct configuration from process environment variables.
 
         Args:
             env: Optional mapping overriding ``os.environ`` for testing.
 
         Returns:
-            Populated :class:`SpinQConfig` instance.
+            Populated :class:`LocalQConfig` instance.
         """
         source = os.environ if env is None else env
         return cls(
-            bind_host=source.get("SPINQ_BIND_HOST", "0.0.0.0"),
-            https_port=int(source.get("SPINQ_HTTPS_PORT", "8443")),
-            mqtt_tls_port=int(source.get("SPINQ_MQTT_TLS_PORT", "8883")),
-            public_host=source.get("SPINQ_PUBLIC_HOST", "common.iot.aic.lgthinq.com"),
-            certs_dir=Path(source.get("SPINQ_CERTS_DIR", "/tmp/spinq-certs")),
+            bind_host=source.get("LOCALQ_BIND_HOST", "0.0.0.0"),
+            https_port=int(source.get("LOCALQ_HTTPS_PORT", "8443")),
+            mqtt_tls_port=int(source.get("LOCALQ_MQTT_TLS_PORT", "8883")),
+            public_host=source.get("LOCALQ_PUBLIC_HOST", "common.iot.aic.lgthinq.com"),
+            certs_dir=Path(source.get("LOCALQ_CERTS_DIR", "/tmp/localq-certs")),
             ha_mqtt_host=source.get("HA_MQTT_HOST", "127.0.0.1"),
             ha_mqtt_port=int(source.get("HA_MQTT_PORT", "1883")),
             ha_mqtt_user=source.get("HA_MQTT_USER") or None,
             ha_mqtt_password=source.get("HA_MQTT_PASSWORD") or None,
             ha_discovery_prefix=source.get("HA_MQTT_DISCOVERY_PREFIX", "homeassistant"),
-            log_level=source.get("SPINQ_LOG_LEVEL", "INFO").upper(),
+            log_level=source.get("LOCALQ_LOG_LEVEL", "INFO").upper(),
             known_appliances=_parse_known_appliances(
-                source.get("SPINQ_KNOWN_APPLIANCES")
+                source.get("LOCALQ_KNOWN_APPLIANCES")
             ),
         )
