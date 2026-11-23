@@ -1,0 +1,44 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "schedule": [
+    "before 6am on Monday"
+  ],
+  "labels": [
+    "dependencies",
+    "renovate"
+  ],
+  "commitMessagePrefix": "chore(deps):",
+  "prConcurrentLimit": 3,
+  "packageRules": [
+    {
+      "description": "Ignore self-published image references in compose.yaml and k8s manifests",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/jelmervdm/localq"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Group all GitHub Actions updates into a single weekly PR",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "GitHub Actions",
+      "groupSlug": "github-actions"
+    },
+    {
+      "description": "Pin Containerfile base image digests for reproducible security rebuilds",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "pinDigests": true
+    }
+  ]
+}
