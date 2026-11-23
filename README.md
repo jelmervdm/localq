@@ -18,16 +18,6 @@ Local smart-laundry cloud emulator and **Home Assistant MQTT Auto-Discovery** br
 
 ## Prerequisites (Initial Wi-Fi Setup)
 
-Before enabling local DNS overrides or blocking outbound internet access, you **must** first connect your washer and dryer to your Wi-Fi network using the official **LG ThinQ mobile app**:
-
-1. Pair each appliance in the LG ThinQ app while normal internet access and public DNS are still active so the appliance saves your Wi-Fi credentials.
-2. Assign static DHCP reservations for the appliances on your router/DHCP server (recommended if you configure `SPINQ_KNOWN_APPLIANCES`).
-3. Enable **Remote Start** on the physical appliance control panel whenever you want Home Assistant to send `start`/`stop` commands.
-
-Once the appliances are on your Wi-Fi network, deploy `spinq` and switch their ThinQ DNS records locally as described in [docs/deployment.md](docs/deployment.md).
-
-## Prerequisites (Initial Wi-Fi Setup)
-
 Before enabling local DNS overrides or blocking outbound internet access, you **must** first connect your washer and dryer to your Wi-Fi network (or IoT VLAN) using the official **LG ThinQ mobile app**:
 
 1. Pair each appliance in the LG ThinQ app while normal internet access and public DNS are still active so the appliance saves your Wi-Fi credentials.
@@ -69,6 +59,16 @@ cp .env.example .env
 set -a && source .env && set +a
 make run
 ```
+
+### Local DNS Overrides
+
+Point the ThinQ endpoints in your local DNS server (Pi-hole, AdGuard Home, Unbound, CoreDNS, or Technitium DNS) to the IP address running `spinqd` (`<SPINQ_IP>`):
+
+- `aic-common.lgthinq.com` → `A` record `<SPINQ_IP>` (HTTPS `/route` dispatch on TCP `443`)
+- `common.iot.aic.lgthinq.com` → `A` record `<SPINQ_IP>` (MQTT-over-TLS on TCP `8883`)
+
+> [!NOTE]
+> Appliances outside the US region may query regional prefixes (for example, `eic` or `kic` instead of `aic`). `tls_ca.py` dynamically mints SNI certificates for any queried ThinQ hostname (with pre-warmed fallback SANs for `*.lgthinq.com`, `*.iot.aic.lgthinq.com`, `*.lgeapi.com`, and `*.smartthinq.com`).
 
 For full self-hosting, Kubernetes, local DNS override, and troubleshooting steps, see the [Deployment & Self-Hosting Guide](docs/deployment.md).
 
