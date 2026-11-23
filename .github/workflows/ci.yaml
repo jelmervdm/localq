@@ -150,10 +150,21 @@ jobs:
           else
             TAG="${RELEASE_TAG}"
           fi
+          VERSION="${TAG#v}"
+          if [[ -f CHANGELOG.md ]]; then
+            CHANGELOG_PATH="${RUNNER_TEMP}/release-changelog.md" VERSION="${VERSION}" python3 -c '
+          import os, pathlib, re
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          ver = re.escape(os.environ["VERSION"])
+          m = re.search(rf"^## \[{ver}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.M | re.S)
+          if m:
+              pathlib.Path(os.environ["CHANGELOG_PATH"]).write_text(m.group(1).strip() + "\n", encoding="utf-8")
+          '
+          fi
           git rev-parse --verify "refs/tags/${TAG}" >/dev/null
           git checkout "refs/tags/${TAG}"
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
-          echo "version=${TAG#v}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -173,13 +184,20 @@ jobs:
           IMAGE_DIGEST: ${{ needs.container.outputs.digest }}
         run: |
           REPO_LOWER="${GITHUB_REPOSITORY,,}"
-          HEADER="### Container Image\n\n\`\`\`bash\ndocker pull ghcr.io/${REPO_LOWER}:${VERSION}\n\`\`\`"
-          if [[ -n "${IMAGE_DIGEST}" && "${GITHUB_REF}" == refs/tags/v* ]]; then
-            HEADER="${HEADER}\n\nDigest: \`${IMAGE_DIGEST}\`"
+          NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
+          : > "${NOTES_FILE}"
+          if [[ -s "${RUNNER_TEMP}/release-changelog.md" ]]; then
+            cat "${RUNNER_TEMP}/release-changelog.md" >> "${NOTES_FILE}"
+            printf '\n' >> "${NOTES_FILE}"
           fi
-          NOTES_HEADER="$(printf '%b' "${HEADER}")"
+          printf '### Container Image\n\n```bash\ndocker pull ghcr.io/%s:%s\n```\n' "${REPO_LOWER}" "${VERSION}" >> "${NOTES_FILE}"
+          if [[ -n "${IMAGE_DIGEST}" && "${GITHUB_REF}" == refs/tags/v* ]]; then
+            printf '\nDigest: `%s`\n' "${IMAGE_DIGEST}" >> "${NOTES_FILE}"
+          fi
+          NOTES_HEADER="$(cat "${NOTES_FILE}")"
           if gh release view "${TAG}" >/dev/null 2>&1; then
             gh release upload "${TAG}" dist/* --clobber
+            gh release edit "${TAG}" --notes "${NOTES_HEADER}"
           else
             gh release create "${TAG}" dist/* --title "${TAG}" --generate-notes --notes "${NOTES_HEADER}"
           fi
