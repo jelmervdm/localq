@@ -142,6 +142,11 @@ class LocalCertificateAuthority:
         LOGGER.info("Generated LocalQ Root CA at %s", ca_crt)
         return ca_crt, ca_key
 
+    def get_ca_pem(self) -> str:
+        """Return the LocalQ Root CA certificate in PEM format."""
+        ca_crt, _ = self.ensure_ca()
+        return ca_crt.read_text(encoding="utf-8")
+
     def prewarm_defaults(self) -> None:
         """Pre-mint certificates for known LG ThinQ endpoints before accepting traffic.
 

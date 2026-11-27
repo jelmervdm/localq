@@ -26,6 +26,8 @@ from localq.mqtt_codec import (
 )
 from localq.protocol import (
     OperationMode,
+    build_certificate_list_response,
+    build_certificate_response,
     build_dispatch_response,
     build_operation_command,
     parse_appliance_telemetry,
@@ -218,6 +220,14 @@ class TestProtocolAndDiscovery(unittest.TestCase):
         dispatch = build_dispatch_response("common.iot.aic.lgthinq.com", 443, 8883)
         self.assertEqual(dispatch["result"]["mqttServer"], "ssl://common.iot.aic.lgthinq.com:8883")
 
+        cert_list = build_certificate_list_response()
+        self.assertEqual(cert_list["resultCode"], "0000")
+        self.assertEqual(cert_list["result"], ["common-server", "aws-iot"])
+
+        cert_resp = build_certificate_response("-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n")
+        self.assertEqual(cert_resp["resultCode"], "0000")
+        self.assertIn("BEGIN CERTIFICATE", cert_resp["result"]["certificatePem"])
+
     def test_softap_payload_helpers(self) -> None:
         probe = json.loads(build_softap_probe_payload().decode("utf-8"))
         self.assertEqual(probe["cmd"], "get_device_info")
@@ -263,29 +273,52 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
                     cafile=str(Path(tmp) / "ca.crt")
                 )
 
-                # 1. Simulate appliance HTTPS /route query to aic-common.lgthinq.com
-                reader, writer = await asyncio.open_connection(
-                    "127.0.0.1",
-                    https_port,
-                    ssl=client_ctx,
-                    server_hostname="aic-common.lgthinq.com",
-                )
-                writer.write(
-                    b"GET /route HTTP/1.1\r\nHost: aic-common.lgthinq.com\r\nConnection: close\r\n\r\n"
-                )
-                await writer.drain()
-                raw_http = await reader.read()
-                writer.close()
-                await writer.wait_closed()
+                # 1. Simulate appliance HTTPS /route/certificate and /route queries
+                for req_path, check in (
+                    (
+                        "/route/certificate",
+                        lambda body: self.assertEqual(body["result"], ["common-server", "aws-iot"]),
+                    ),
+                    (
+                        "/route/certificate?name=aws-iot",
+                        lambda body: self.assertEqual(
+                            body["result"]["certificatePem"],
+                            (Path(tmp) / "ca.crt").read_text(encoding="utf-8"),
+                        ),
+                    ),
+                    (
+                        "/route",
+                        lambda body: (
+                            self.assertEqual(
+                                body["result"]["apiServer"], "https://common.iot.aic.lgthinq.com"
+                            ),
+                            self.assertEqual(
+                                body["result"]["mqttServer"],
+                                "ssl://common.iot.aic.lgthinq.com:8883",
+                            ),
+                        ),
+                    ),
+                ):
+                    reader, writer = await asyncio.open_connection(
+                        "127.0.0.1",
+                        https_port,
+                        ssl=client_ctx,
+                        server_hostname="aic-common.lgthinq.com",
+                    )
+                    writer.write(
+                        f"GET {req_path} HTTP/1.1\r\n"
+                        "Host: aic-common.lgthinq.com\r\n"
+                        "Connection: close\r\n\r\n".encode("ascii")
+                    )
+                    await writer.drain()
+                    raw_http = await reader.read()
+                    writer.close()
+                    await writer.wait_closed()
 
-                self.assertIn(b"200 OK", raw_http)
-                body = json.loads(raw_http.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
-                self.assertEqual(body["resultCode"], "0000")
-                self.assertEqual(body["result"]["apiServer"], "https://common.iot.aic.lgthinq.com")
-                self.assertEqual(
-                    body["result"]["mqttServer"],
-                    "ssl://common.iot.aic.lgthinq.com:8883",
-                )
+                    self.assertIn(b"200 OK", raw_http)
+                    body = json.loads(raw_http.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
+                    self.assertEqual(body["resultCode"], "0000")
+                    check(body)
 
                 # 2. Simulate appliance MQTT-TLS session to common.iot.aic.lgthinq.com
                 m_reader, m_writer = await asyncio.open_connection(

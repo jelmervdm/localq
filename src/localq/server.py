@@ -9,6 +9,7 @@ import signal
 import ssl
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from localq.config import LocalQConfig
 from localq.ha_mqtt import HADiscoveryBridge
@@ -28,6 +29,8 @@ from localq.mqtt_codec import (
 from localq.protocol import (
     ApplianceState,
     OperationMode,
+    build_certificate_list_response,
+    build_certificate_response,
     build_dispatch_response,
     build_operation_command,
     parse_appliance_telemetry,
@@ -328,8 +331,16 @@ class LocalQServer:
                 len(body_text),
             )
 
-            if path == "/healthz":
+            parsed_url = urlsplit(path)
+            route_path = parsed_url.path.rstrip("/") or "/"
+            if route_path == "/healthz":
                 resp_payload = {"status": "ok"}
+            elif route_path == "/route/certificate":
+                query = parse_qs(parsed_url.query)
+                if query.get("name"):
+                    resp_payload = build_certificate_response(self.ca.get_ca_pem())
+                else:
+                    resp_payload = build_certificate_list_response()
             else:
                 resp_payload = build_dispatch_response(
                     public_host=self.config.public_host,

@@ -345,6 +345,35 @@ def build_operation_command(
     }
 
 
+def build_certificate_list_response() -> dict[str, Any]:
+    """Generate a ``GET /route/certificate`` response listing available ThinQ CA profiles.
+
+    Returns:
+        ThinQ v2 JSON envelope ``{"resultCode": "0000", "result": ["common-server", "aws-iot"]}``.
+    """
+    return {
+        "resultCode": "0000",
+        "result": ["common-server", "aws-iot"],
+    }
+
+
+def build_certificate_response(certificate_pem: str) -> dict[str, Any]:
+    """Generate a ``GET /route/certificate?name=...`` response containing the Root CA PEM.
+
+    Args:
+        certificate_pem: PEM-encoded X.509 CA certificate trusted for local TLS endpoints.
+
+    Returns:
+        ThinQ v2 JSON envelope ``{"resultCode": "0000", "result": {"certificatePem": ...}}``.
+    """
+    return {
+        "resultCode": "0000",
+        "result": {
+            "certificatePem": certificate_pem,
+        },
+    }
+
+
 def build_dispatch_response(
     public_host: str,
     https_port: int,
