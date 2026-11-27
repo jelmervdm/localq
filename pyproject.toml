@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "localq"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local smart-appliance cloud emulator and Home Assistant MQTT auto-discovery bridge"
 readme = "README.md"
 requires-python = ">=3.11"

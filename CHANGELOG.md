@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-11-27
+
+### Added
+
+- Implemented `GET /route/certificate` endpoint support in `server.py` and `protocol.py` matching the LG ThinQ v2 schema:
+  - `GET /route/certificate` returns `["common-server", "aws-iot"]`.
+  - `GET /route/certificate?name=...` returns the LocalQ Root CA (`ca.crt`) in `certificatePem` via `LocalCertificateAuthority.get_ca_pem()`.
+- Added unit and end-to-end TLS HTTPS tests for `/route/certificate` and `/route/certificate?name=aws-iot`.
+
+### Fixed
+
+- Fixed appliances looping on `GET /route/certificate` without proceeding to `/route` or MQTT-TLS (`8883`) because `/route/certificate` previously returned the `/route` dispatch payload instead of certificate metadata/PEM.
+
 ## [0.1.1] - 2026-11-23
 
 ### Fixed

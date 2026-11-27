@@ -3,4 +3,4 @@
 from localq.config import LocalQConfig
 
 __all__ = ["LocalQConfig"]
-__version__ = "0.1.1"
+__version__ = "0.1.2"
