@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-28
+
+### Added
+
+- Ported full LG ThinQ v2 CLIP provisioning handshake (`preDeploy`/`deploy` → `completeProvisioning`, `completeProvisioning_ack` → `0xF0ED` status poll, `req_timesync` → `resp_timesync`, and `device_packet` → `CLIP ack`) in `protocol.py` and `server.py`.
+- Ported `AABB` binary protocol codec and telemetry/event decoders (`0xEB`/`0xEC` status records for washers and dryers, plus `0x03` subtype `0x10` real-time drum door open/close events).
+- Added Home Assistant MQTT Auto-Discovery controls and sensors in `ha_mqtt.py`: `button.<slug>_start`, `button.<slug>_pause`, `select.<slug>_course`, `switch.dryer_smart_pairing`, `sensor.dryer_recommended_course`, and Washer-to-Dryer Smart Pairing transitions.
+- Added `LOCALQ_SMART_PAIRING_ENABLED`, `LOCALQ_SMART_PAIRING_WINDOW_SECONDS`, `LOCALQ_DRYER_COURSE_MODE`, and `LOCALQ_WASHER_COURSE_MODE` options in `config.py`.
+
+### Fixed
+
+- Fixed `binary_sensor.front_load_washer_door_lock` polarity (`device_class: "lock"` expects `payload_on: "OFF"`, `payload_off: "ON"` so `ON` on the MQTT state topic renders as **Locked** and `OFF` renders as **Unlocked**).
+- Preserved live appliance state across MQTT reconnects by publishing only `connected` via `publish_connectivity()` instead of resetting entities to `initial`.
+
 ## [0.1.3] - 2026-11-28
 
 ### Added
