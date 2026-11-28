@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-11-28
+
+### Added
+
+- Added `decode_json_payload()` in `protocol.py` to strip trailing NUL padding (`\x00`) and whitespace from Realtek firmware MQTT payloads before JSON parsing.
+- Added numeric ThinQ `deviceType` mapping (`"201"` → `"washer"`, `"202"` → `"dryer"`) and `data.appInfo.modelName` / `kind` model extraction.
+- Added `door_open` state parsing and `binary_sensor.<slug>_door` (`device_class: "door"`) discovery/state publishing in `ha_mqtt.py`.
+- Added `build_deploy_ack()` and `clip/provisioning/` (`cmd: "deploy"`) handling in `server.py` to log full provisioning payloads, preserve `current_state`, and send `deploy_ack` on `lime/devices/<did>`.
+
+### Fixed
+
+- Fixed `Extra data` JSON parse warnings on every appliance `PUBLISH` frame caused by trailing `\x00` bytes.
+- Increased raw parse-error log truncation in `server.py` from 512 to 4096 bytes.
+
 ## [0.1.2] - 2026-11-27
 
 ### Added
