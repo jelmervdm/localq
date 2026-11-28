@@ -20,11 +20,19 @@ from localq.mqtt_codec import (
     encode_subscribe,
     read_mqtt_packet,
 )
-from localq.protocol import ApplianceState, OperationMode
+from localq.protocol import (
+    DRYER_SELECTABLE_COURSES,
+    WASHER_SELECTABLE_COURSES,
+    ApplianceState,
+    OperationMode,
+)
 
 LOGGER = logging.getLogger(__name__)
 
-CommandCallback = Callable[[str, OperationMode], Awaitable[None]]
+CommandCallback = Callable[[str, OperationMode | str], Awaitable[None]]
+
+_DRYER_SELECTABLE_SET: frozenset[str] = frozenset(DRYER_SELECTABLE_COURSES)
+_WASHER_SELECTABLE_SET: frozenset[str] = frozenset(WASHER_SELECTABLE_COURSES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +43,7 @@ class _EntitySpec:
     object_suffix: str
     name: str
     state_topic_suffix: str
+    unique_id_suffix: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -73,6 +82,28 @@ _COMMON_ENTITIES: tuple[_EntitySpec, ...] = (
         },
     ),
     _EntitySpec(
+        component="button",
+        object_suffix="start",
+        name="Start",
+        state_topic_suffix="",
+        extra={
+            "command_topic_suffix": "cmd/operation",
+            "payload_press": OperationMode.START.value,
+            "icon": "mdi:play",
+        },
+    ),
+    _EntitySpec(
+        component="button",
+        object_suffix="pause",
+        name="Pause",
+        state_topic_suffix="",
+        extra={
+            "command_topic_suffix": "cmd/operation",
+            "payload_press": OperationMode.STOP.value,
+            "icon": "mdi:pause",
+        },
+    ),
+    _EntitySpec(
         component="binary_sensor",
         object_suffix="remote_start",
         name="Remote start",
@@ -85,6 +116,17 @@ _COMMON_ENTITIES: tuple[_EntitySpec, ...] = (
         name="Run completed",
         state_topic_suffix="run_completed",
         extra={"payload_on": "ON", "payload_off": "OFF"},
+    ),
+    _EntitySpec(
+        component="binary_sensor",
+        object_suffix="door",
+        name="Door",
+        state_topic_suffix="door",
+        extra={
+            "device_class": "door",
+            "payload_on": "ON",
+            "payload_off": "OFF",
+        },
     ),
     _EntitySpec(
         component="binary_sensor",
@@ -133,13 +175,6 @@ _COMMON_ENTITIES: tuple[_EntitySpec, ...] = (
         state_topic_suffix="error",
         extra={"entity_category": "diagnostic"},
     ),
-    _EntitySpec(
-        component="binary_sensor",
-        object_suffix="door",
-        name="Door",
-        state_topic_suffix="door",
-        extra={"device_class": "door", "payload_on": "ON", "payload_off": "OFF"},
-    ),
 )
 
 _WASHER_EXTRA_ENTITIES: tuple[_EntitySpec, ...] = (
@@ -154,7 +189,33 @@ _WASHER_EXTRA_ENTITIES: tuple[_EntitySpec, ...] = (
         object_suffix="door_lock",
         name="Door lock",
         state_topic_suffix="door_lock",
-        extra={"device_class": "lock", "payload_on": "ON", "payload_off": "OFF"},
+        # HA's `lock` device class is inverted (on == unlocked). The state topic keeps
+        # ON == locked, so swap the payload mapping instead of the topic semantics.
+        extra={"device_class": "lock", "payload_on": "OFF", "payload_off": "ON"},
+    ),
+)
+
+_DRYER_EXTRA_ENTITIES: tuple[_EntitySpec, ...] = (
+    _EntitySpec(
+        component="switch",
+        object_suffix="smart_pairing",
+        name="Smart pairing",
+        state_topic_suffix="smart_pairing",
+        extra={
+            "command_topic_suffix": "cmd/smart_pairing",
+            "payload_on": "ON",
+            "payload_off": "OFF",
+            "state_on": "ON",
+            "state_off": "OFF",
+            "icon": "mdi:link-variant",
+        },
+    ),
+    _EntitySpec(
+        component="sensor",
+        object_suffix="recommended_course",
+        name="Recommended course",
+        state_topic_suffix="recommended_course",
+        extra={"icon": "mdi:tumble-dryer"},
     ),
 )
 
@@ -213,13 +274,40 @@ class HADiscoveryBridge:
         }
 
         specs = list(_COMMON_ENTITIES)
-        if state.appliance_type != "dryer":
+        if state.appliance_type == "dryer":
+            specs.extend(_DRYER_EXTRA_ENTITIES)
+        else:
             specs.extend(_WASHER_EXTRA_ENTITIES)
+
+        course_options = list(
+            DRYER_SELECTABLE_COURSES
+            if state.appliance_type == "dryer"
+            else WASHER_SELECTABLE_COURSES
+        )
+        specs.append(
+            _EntitySpec(
+                component="select",
+                object_suffix="course",
+                # Distinct suffix avoids unique_id collision with sensor.<slug>_course.
+                unique_id_suffix="select_course",
+                name="Selected course",
+                state_topic_suffix="selected_course",
+                extra={
+                    "command_topic_suffix": "cmd/course",
+                    "options": course_options,
+                    "icon": (
+                        "mdi:tumble-dryer"
+                        if state.appliance_type == "dryer"
+                        else "mdi:washing-machine"
+                    ),
+                },
+            )
+        )
 
         messages: list[tuple[str, dict[str, Any]]] = []
         for spec in specs:
             object_id = f"{slug}_{spec.object_suffix}"
-            unique_id = f"localq_{state.device_id}_{spec.object_suffix}"
+            unique_id = f"localq_{state.device_id}_{spec.unique_id_suffix or spec.object_suffix}"
             topic = (
                 f"{self.config.ha_discovery_prefix}/{spec.component}/"
                 f"localq_{slug}/{spec.object_suffix}/config"
@@ -228,12 +316,14 @@ class HADiscoveryBridge:
                 "name": spec.name,
                 "unique_id": unique_id,
                 "default_entity_id": f"{spec.component}.{object_id}",
-                "state_topic": f"{base_topic}/{spec.state_topic_suffix}",
                 "availability_topic": self.BRIDGE_STATUS_TOPIC,
                 "payload_available": "online",
                 "payload_not_available": "offline",
                 "device": device_block,
             }
+            if spec.state_topic_suffix:
+                # Stateless MQTT button entities reject state_topic in Home Assistant schema.
+                payload["state_topic"] = f"{base_topic}/{spec.state_topic_suffix}"
             extra = dict(spec.extra)
             cmd_suffix = extra.pop("command_topic_suffix", None)
             if cmd_suffix:
@@ -264,14 +354,32 @@ class HADiscoveryBridge:
             (f"{base_topic}/power", power_value),
             (f"{base_topic}/remote_start", "ON" if state.remote_control_enabled else "OFF"),
             (f"{base_topic}/run_completed", "ON" if state.run_completed else "OFF"),
+            (f"{base_topic}/door", "ON" if state.door_open else "OFF"),
             (f"{base_topic}/connected", "ON" if state.connected else "OFF"),
             (f"{base_topic}/remaining_time", str(state.remaining_time_minutes)),
             (f"{base_topic}/total_time", str(state.total_time_minutes)),
             (f"{base_topic}/course", state.course),
             (f"{base_topic}/error", state.error_code),
-            (f"{base_topic}/door", "ON" if state.door_open else "OFF"),
         ]
-        if state.appliance_type != "dryer":
+        valid_courses = (
+            _DRYER_SELECTABLE_SET
+            if state.appliance_type == "dryer"
+            else _WASHER_SELECTABLE_SET
+        )
+        if state.course in valid_courses:
+            # Avoid publishing "none"/"unknown" to MQTT select, which triggers HA Invalid option warnings.
+            updates.append((f"{base_topic}/selected_course", state.course))
+        if state.appliance_type == "dryer":
+            updates.extend(
+                [
+                    (
+                        f"{base_topic}/smart_pairing",
+                        "ON" if state.smart_pairing_enabled else "OFF",
+                    ),
+                    (f"{base_topic}/recommended_course", state.recommended_course),
+                ]
+            )
+        else:
             updates.append(
                 (f"{base_topic}/door_lock", "ON" if state.door_locked else "OFF")
             )
@@ -292,6 +400,31 @@ class HADiscoveryBridge:
         for topic, value in self.build_state_messages(state):
             await self._publish_raw(topic, value, retain=True)
 
+    async def publish_connectivity(self, state: ApplianceState) -> None:
+        """Publish only the appliance's ``connected`` topic without touching cycle or door state.
+
+        Args:
+            state: Appliance state snapshot carrying ``slug``, ``device_id``, and ``connected``.
+        """
+        self._slug_to_device_id[state.slug] = state.device_id
+        if state.slug not in self._discovered_slugs:
+            return
+        await self._publish_raw(
+            f"localq/{state.slug}/connected",
+            "ON" if state.connected else "OFF",
+            retain=True,
+        )
+
+    async def publish_topic(self, topic: str, payload: str, retain: bool = True) -> None:
+        """Publish a single MQTT state payload to Home Assistant Mosquitto.
+
+        Args:
+            topic: Full MQTT topic string.
+            payload: UTF-8 string payload to publish.
+            retain: Whether Mosquitto should retain the message.
+        """
+        await self._publish_raw(topic, payload, retain=retain)
+
     async def handle_ha_command(self, topic: str, payload: bytes) -> None:
         """Parse an incoming MQTT command message from Home Assistant and dispatch it.
 
@@ -305,8 +438,10 @@ class HADiscoveryBridge:
 
         slug = parts[1]
         cmd_kind = parts[3]
-        raw_val = payload.decode("utf-8", errors="replace").strip().lower()
+        raw_text = payload.decode("utf-8", errors="replace").strip()
+        raw_val = raw_text.lower()
 
+        operation: OperationMode | str
         if cmd_kind == "power":
             operation = OperationMode.POWER_ON if raw_val == "on" else OperationMode.POWER_OFF
         elif cmd_kind == "operation":
@@ -314,6 +449,41 @@ class HADiscoveryBridge:
                 operation = OperationMode(raw_val)
             except ValueError:
                 LOGGER.warning("Ignoring unsupported operation %r for %s", raw_val, slug)
+                return
+        elif cmd_kind == "probe_start":
+            if raw_val and all(ch.isalnum() or ch == "_" for ch in raw_val):
+                operation = f"start:{raw_val}"
+            else:
+                LOGGER.warning("Ignoring invalid probe_start candidate %r for %s", raw_val, slug)
+                return
+        elif cmd_kind == "course":
+            if raw_text and len(raw_text) <= 64 and ".." not in raw_text and all(ord(ch) >= 32 for ch in raw_text):
+                operation = f"course:{raw_text}"
+            else:
+                LOGGER.warning("Ignoring invalid course command %r for %s", raw_text, slug)
+                return
+        elif cmd_kind == "probe_course":
+            if ":" not in raw_text:
+                LOGGER.warning("Ignoring malformed probe_course payload %r for %s", raw_text, slug)
+                return
+            mode_part, course_part = (seg.strip() for seg in raw_text.split(":", 1))
+            if (
+                mode_part
+                and all(ch.isalnum() or ch == "_" for ch in mode_part)
+                and course_part
+                and len(course_part) <= 64
+                and ".." not in course_part
+                and all(ord(ch) >= 32 for ch in course_part)
+            ):
+                operation = f"probe_course:{mode_part.lower()}:{course_part}"
+            else:
+                LOGGER.warning("Ignoring invalid probe_course payload %r for %s", raw_text, slug)
+                return
+        elif cmd_kind == "smart_pairing":
+            if raw_val in ("on", "off"):
+                operation = f"smart_pairing:{raw_val}"
+            else:
+                LOGGER.warning("Ignoring invalid smart_pairing payload %r for %s", raw_text, slug)
                 return
         else:
             return

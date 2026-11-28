@@ -13,6 +13,21 @@ from pathlib import Path
 DEFAULT_KNOWN_APPLIANCES: dict[str, str] = {}
 
 
+def _parse_bool_env(raw_value: str | None, default: bool) -> bool:
+    """Parse an environment variable boolean string with a fallback default.
+
+    Args:
+        raw_value: Raw environment variable value, or ``None`` if unset.
+        default: Fallback boolean when ``raw_value`` is ``None`` or blank.
+
+    Returns:
+        Parsed boolean value.
+    """
+    if raw_value is None or not raw_value.strip():
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on", "enable", "enabled"}
+
+
 def _parse_known_appliances(raw_value: str | None) -> dict[str, str]:
     """Parse JSON mapping of appliance IP/ID identifiers to appliance types.
 
@@ -56,6 +71,10 @@ class LocalQConfig:
         ha_discovery_prefix: Home Assistant MQTT Auto-Discovery topic prefix.
         log_level: Python logging level name (e.g., ``INFO``, ``DEBUG``).
         known_appliances: Mapping from client IP or device ID to ``washer``/``dryer``.
+        smart_pairing_enabled: Whether Washer-to-Dryer Smart Pairing auto-selects dryer cycles.
+        smart_pairing_window_seconds: Maximum seconds after washer completion to auto-pair dryer.
+        dryer_course_mode: AABB packet mode used when sending course changes to the dryer.
+        washer_course_mode: AABB packet mode used when sending course changes to the washer.
     """
 
     bind_host: str = "0.0.0.0"
@@ -74,6 +93,10 @@ class LocalQConfig:
     known_appliances: dict[str, str] = field(
         default_factory=lambda: dict(DEFAULT_KNOWN_APPLIANCES)
     )
+    smart_pairing_enabled: bool = True
+    smart_pairing_window_seconds: int = 10800
+    dryer_course_mode: str = "f025_45b"
+    washer_course_mode: str = "f025_45b"
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> LocalQConfig:
@@ -103,4 +126,12 @@ class LocalQConfig:
             known_appliances=_parse_known_appliances(
                 source.get("LOCALQ_KNOWN_APPLIANCES")
             ),
+            smart_pairing_enabled=_parse_bool_env(
+                source.get("LOCALQ_SMART_PAIRING_ENABLED"), True
+            ),
+            smart_pairing_window_seconds=int(
+                source.get("LOCALQ_SMART_PAIRING_WINDOW_SECONDS", "10800")
+            ),
+            dryer_course_mode=source.get("LOCALQ_DRYER_COURSE_MODE", "f025_45b").strip().lower(),
+            washer_course_mode=source.get("LOCALQ_WASHER_COURSE_MODE", "f025_45b").strip().lower(),
         )

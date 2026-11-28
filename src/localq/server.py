@@ -7,9 +7,10 @@ import json
 import logging
 import signal
 import ssl
+import time
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
 
 from localq.config import LocalQConfig
 from localq.ha_mqtt import HADiscoveryBridge
@@ -27,15 +28,28 @@ from localq.mqtt_codec import (
     read_mqtt_packet,
 )
 from localq.protocol import (
+    ACTIVE_RUN_STATES,
     ApplianceState,
     OperationMode,
+    RunState,
     build_certificate_list_response,
     build_certificate_response,
-    build_deploy_ack,
+    build_clip_ack,
+    build_clip_course_command,
+    build_clip_deploy_response,
+    build_clip_operation_command,
+    build_clip_start_candidates,
+    build_clip_status_request,
+    build_clip_timesync_response,
     build_dispatch_response,
     build_operation_command,
     decode_json_payload,
+    map_washer_to_dryer_course,
+    parse_aabb_door_event,
+    parse_aabb_status_frame,
     parse_appliance_telemetry,
+    resolve_course_id,
+    resolve_course_name,
 )
 from localq.tls_ca import LocalCertificateAuthority
 
@@ -53,6 +67,7 @@ class ApplianceSession:
     subscribed_topics: list[str] = field(default_factory=list)
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     state: ApplianceState | None = None
+    status_requested: bool = False
 
     def target_command_topic(self) -> str:
         """Select the best downstream command topic subscribed by the appliance."""
@@ -98,6 +113,11 @@ class LocalQServer:
 
         self.sessions: dict[str, ApplianceSession] = {}
         self.states: dict[str, ApplianceState] = {}
+        self.smart_pairing_enabled: bool = config.smart_pairing_enabled
+        self.last_completed_washer_course: str | None = None
+        self.last_completed_washer_at: float | None = None
+        self.pending_dryer_course: str | None = None
+        self.recommended_dryer_course: str = "none"
         self.captured_http_requests: list[dict[str, Any]] = []
         self.captured_mqtt_messages: list[dict[str, Any]] = []
         self.tls_failures: list[str] = []
@@ -187,8 +207,19 @@ class LocalQServer:
             operation: Requested control operation.
 
         Returns:
-            True if a matching active session received the command packet.
+            True if a matching active session received the command packet (or a
+            gateway-level setting like Smart Pairing was updated).
         """
+        if isinstance(operation, str) and operation.startswith("smart_pairing:"):
+            target_flag = operation.split(":", 1)[1].strip().lower()
+            if target_flag not in ("on", "off"):
+                LOGGER.warning("Ignoring invalid smart_pairing operation=%r", operation)
+                return False
+            self.smart_pairing_enabled = target_flag == "on"
+            LOGGER.info("Set Smart Pairing enabled=%s", self.smart_pairing_enabled)
+            await self._publish_dryer_pairing_topics()
+            return True
+
         session = self.sessions.get(device_id)
         if session is None:
             for candidate in self.sessions.values():
@@ -202,12 +233,146 @@ class LocalQServer:
             LOGGER.warning("Cannot dispatch %s: appliance %s not connected", operation, device_id)
             return False
 
+        topic = session.target_command_topic()
+        if topic.startswith("lime/devices/"):
+            did = topic.split("/", 2)[-1] or session.device_id
+            current_state = getattr(session, "state", None)
+            if isinstance(operation, str) and operation.startswith("start:"):
+                target_label = operation.split(":", 1)[1].strip()
+                candidates = build_clip_start_candidates(did, current_state)
+                for label, pkt in candidates:
+                    if label == target_label:
+                        LOGGER.info(
+                            "Sending single CLIP START probe candidate=%s device=%s data=%s",
+                            label,
+                            did,
+                            pkt["data"],
+                        )
+                        await self._send_clip_json(session, did, pkt)
+                        return True
+                LOGGER.warning(
+                    "Unknown CLIP START probe candidate=%r for device=%s",
+                    target_label,
+                    session.device_id,
+                )
+                return False
+
+            if isinstance(operation, str) and (
+                operation.startswith("course:") or operation.startswith("probe_course:")
+            ):
+                if operation.startswith("probe_course:"):
+                    _, mode_name, course_name = operation.split(":", 2)
+                else:
+                    course_name = operation.split(":", 1)[1].strip()
+                    mode_name = self._get_course_mode(session.appliance_type)
+
+                if (
+                    current_state is not None
+                    and current_state.current_state in ACTIVE_RUN_STATES
+                ):
+                    LOGGER.warning(
+                        "Refusing course change=%r while device=%s is in active state=%s",
+                        course_name,
+                        did,
+                        current_state.current_state,
+                    )
+                    return False
+
+                course_id = resolve_course_id(session.appliance_type, course_name)
+                if course_id is None:
+                    LOGGER.warning(
+                        "Unknown course=%r for device=%s type=%s",
+                        course_name,
+                        did,
+                        session.appliance_type,
+                    )
+                    return False
+
+                if (
+                    mode_name.strip().lower().startswith("f026")
+                    and current_state is not None
+                    and current_state.door_open
+                ):
+                    # F026 opcodes double as start/resume on US firmware; block them while drum door is ajar.
+                    LOGGER.warning(
+                        "Refusing %s course packet=%r while drum door is open on device=%s",
+                        mode_name,
+                        course_name,
+                        did,
+                    )
+                    return False
+
+                try:
+                    course_pkt = build_clip_course_command(
+                        did=did,
+                        course_id=course_id,
+                        appliance_type=session.appliance_type,
+                        mode=mode_name,
+                    )
+                except ValueError as exc:
+                    LOGGER.warning(
+                        "Unsupported course command mode=%r for device=%s: %s",
+                        mode_name,
+                        did,
+                        exc,
+                    )
+                    return False
+
+                resolved_name = (
+                    resolve_course_name(session.appliance_type, course_name)
+                    or course_name
+                )
+                LOGGER.info(
+                    "Sending CLIP course command device=%s type=%s course=%s (%d) mode=%s data=%s",
+                    did,
+                    session.appliance_type,
+                    resolved_name,
+                    course_id,
+                    mode_name,
+                    course_pkt["data"],
+                )
+                await self._send_clip_json(session, did, course_pkt)
+                return True
+
+            try:
+                op_mode = OperationMode(operation) if isinstance(operation, str) else operation
+            except ValueError:
+                LOGGER.warning("Ignoring unknown operation=%r for device=%s", operation, session.device_id)
+                return False
+
+            if op_mode == OperationMode.START:
+                start_pkt = build_clip_operation_command(
+                    did,
+                    op_mode,
+                    state=current_state,
+                    appliance_type=session.appliance_type,
+                )
+                LOGGER.info(
+                    "Sending CLIP START command device=%s type=%s data=%s",
+                    did,
+                    session.appliance_type,
+                    start_pkt["data"],
+                )
+                await self._send_clip_json(session, did, start_pkt)
+                return True
+
+            await self._send_clip_json(
+                session,
+                did,
+                build_clip_operation_command(
+                    did,
+                    op_mode,
+                    state=current_state,
+                    appliance_type=session.appliance_type,
+                ),
+            )
+            return True
+
         cmd_envelope = build_operation_command(
             device_id=session.device_id,
             operation=operation,
             appliance_type=session.appliance_type,
         )
-        topic = session.target_command_topic()
         pkt = encode_publish(topic, json.dumps(cmd_envelope), qos=0, retain=False)
         async with session.write_lock:
             session.writer.write(pkt)
@@ -333,16 +498,27 @@ class LocalQServer:
                 len(body_text),
             )
 
-            parsed_url = urlsplit(path)
-            route_path = parsed_url.path.rstrip("/") or "/"
-            if route_path == "/healthz":
+            device_id_hdr = headers.get("x-device-id", "").strip()
+            device_type_hdr = headers.get("x-device-type", "").strip()
+            if device_id_hdr:
+                if device_type_hdr == "202":
+                    self.config.known_appliances.setdefault(device_id_hdr, "dryer")
+                elif device_type_hdr == "201":
+                    self.config.known_appliances.setdefault(device_id_hdr, "washer")
+
+            parsed_url = urllib.parse.urlsplit(path)
+            req_path = parsed_url.path.rstrip("/") or "/"
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+
+            if req_path == "/healthz":
                 resp_payload = {"status": "ok"}
-            elif route_path == "/route/certificate":
-                query = parse_qs(parsed_url.query)
-                if query.get("name"):
+            elif req_path == "/route/certificate":
+                if query_params.get("name"):
                     resp_payload = build_certificate_response(self.ca.get_ca_pem())
                 else:
                     resp_payload = build_certificate_list_response()
+            elif req_path.startswith("/route/certificate/"):
+                resp_payload = build_certificate_response(self.ca.get_ca_pem())
             else:
                 resp_payload = build_dispatch_response(
                     public_host=self.config.public_host,
@@ -384,26 +560,20 @@ class LocalQServer:
             connect = decode_connect(first_pkt[2])
             device_id = connect.client_id or peer_ip
             appliance_type = self._infer_appliance_type(peer_ip, device_id)
+            prior_state = self.states.get(device_id)
+            if prior_state is not None:
+                prior_state.connected = True
+                appliance_type = prior_state.appliance_type
 
             session = ApplianceSession(
                 device_id=device_id,
                 peer_ip=peer_ip,
                 appliance_type=appliance_type,
                 writer=writer,
-                state=ApplianceState(
-                    device_id=device_id,
-                    appliance_type=appliance_type,
-                    model_name=(
-                        "LG_Smart_Dryer2"
-                        if appliance_type == "dryer"
-                        else "LG_Smart_Laundry2"
-                    ),
-                    current_state="initial",
-                    connected=True,
-                ),
+                # Reuse last known state across reconnects rather than publishing synthetic defaults.
+                state=prior_state,
             )
             self.sessions[device_id] = session
-            self.states[device_id] = session.state
             LOGGER.info(
                 "Appliance MQTT CONNECT client_id=%s peer=%s type=%s username=%s",
                 device_id,
@@ -416,7 +586,8 @@ class LocalQServer:
                 writer.write(encode_connack(session_present=False, return_code=0))
                 await writer.drain()
 
-            await self.bridge.publish_state(session.state)
+            if prior_state is not None:
+                await self._publish_connectivity(prior_state)
 
             while True:
                 pkt = await read_mqtt_packet(stream_reader)
@@ -452,7 +623,7 @@ class LocalQServer:
                             "peer_ip": peer_ip,
                             "device_id": device_id,
                             "topic": pub.topic,
-                            "payload": pub.payload.decode("utf-8", errors="replace"),
+                            "payload": pub.payload.rstrip(b"\x00").decode("utf-8", errors="replace"),
                         }
                     )
                     LOGGER.info(
@@ -475,12 +646,65 @@ class LocalQServer:
         except (MqttCodecError, asyncio.TimeoutError, ConnectionError, ssl.SSLError) as exc:
             LOGGER.info("Appliance MQTT session ended for %s: %s", peer_ip, exc)
         finally:
-            if session is not None:
+            if session is not None and self.sessions.get(session.device_id) is session:
+                # Identity check prevents a closing stale socket from evicting a newer reconnect session.
                 self.sessions.pop(session.device_id, None)
                 if session.state is not None:
                     session.state.connected = False
-                    await self.bridge.publish_state(session.state)
+                    await self._publish_connectivity(session.state)
             await _safe_close(writer)
+
+    async def _send_clip_json(
+        self,
+        session: ApplianceSession,
+        did: str,
+        payload_dict: dict[str, Any],
+    ) -> None:
+        topic = f"lime/devices/{did}"
+        pkt = encode_publish(topic, json.dumps(payload_dict), qos=0, retain=False)
+        async with session.write_lock:
+            session.writer.write(pkt)
+            await session.writer.drain()
+        LOGGER.info(
+            "Sent CLIP %s to device=%s on topic=%s",
+            payload_dict.get("cmd"),
+            did,
+            topic,
+        )
+
+    async def _ensure_status_requested(
+        self,
+        session: ApplianceSession,
+        did: str,
+    ) -> None:
+        """Issue the initial 0xF0ED AABB status query once per MQTT session."""
+        if session.status_requested:
+            return
+        session.status_requested = True
+        await self._send_clip_json(session, did, build_clip_status_request(did))
+
+    async def _schedule_new_provisioning(
+        self,
+        session: ApplianceSession,
+        did: str,
+    ) -> None:
+        await asyncio.sleep(4.0)
+        if session.device_id not in self.sessions:
+            return
+        try:
+            await self._send_clip_json(
+                session,
+                did,
+                {
+                    "did": did,
+                    "mid": 0,
+                    "cmd": "newProvisioning",
+                    "type": 0,
+                    "data": None,
+                },
+            )
+        except OSError:
+            pass
 
     async def _process_telemetry(
         self,
@@ -500,61 +724,116 @@ class LocalQServer:
             )
             return
 
-        if topic.startswith("clip/provisioning/") or decoded.get("cmd") == "deploy":
-            LOGGER.info(
-                "Appliance CLIP provisioning payload device=%s topic=%s payload=%s",
-                session.device_id,
-                topic,
-                json.dumps(decoded),
-            )
-            device_type_raw = str(decoded.get("deviceType", "")).strip()
-            if device_type_raw == "202":
-                session.appliance_type = "dryer"
-            elif device_type_raw == "201":
-                session.appliance_type = "washer"
+        if "cmd" in decoded:
+            cmd = str(decoded.get("cmd", ""))
+            did = str(decoded.get("did") or session.device_id)
+            if cmd in ("preDeploy", "deploy") or "clip/provisioning/devices/" in topic:
+                data_block = decoded.get("data") if isinstance(decoded.get("data"), dict) else {}
+                app_info = data_block.get("appInfo") if isinstance(data_block.get("appInfo"), dict) else {}
+                dev_type_code = str(decoded.get("deviceType") or app_info.get("DeviceType") or "")
+                if dev_type_code == "202":
+                    session.appliance_type = "dryer"
+                elif dev_type_code == "201":
+                    session.appliance_type = "washer"
 
-            data_block = decoded.get("data")
-            app_info_model: Any = None
-            has_telemetry = False
-            if isinstance(data_block, dict):
-                app_info = data_block.get("appInfo")
-                if isinstance(app_info, dict):
-                    app_info_model = app_info.get("modelName")
-                state_block = data_block.get("state")
-                reported = state_block.get("reported") if isinstance(state_block, dict) else None
-                has_telemetry = any(
-                    isinstance(container, dict)
-                    and ("washerDryer" in container or "currentState" in container)
-                    for container in (data_block, state_block, reported)
-                )
-            if not has_telemetry:
-                state_block = decoded.get("state")
-                reported = state_block.get("reported") if isinstance(state_block, dict) else None
-                has_telemetry = any(
-                    isinstance(container, dict)
-                    and ("washerDryer" in container or "currentState" in container)
-                    for container in (state_block, reported)
-                )
+                model_name = str(app_info.get("modelName") or decoded.get("kind") or "")
+                if session.state is None:
+                    # Retain metadata until real 0xEB/0xEC telemetry arrives; do not clobber HA state.
+                    session.state = ApplianceState(
+                        device_id=session.device_id,
+                        appliance_type=session.appliance_type,
+                        model_name=model_name
+                        or (
+                            "LG_Smart_Dryer2"
+                            if session.appliance_type == "dryer"
+                            else "LG_Smart_Laundry2"
+                        ),
+                        connected=True,
+                    )
+                else:
+                    session.state.appliance_type = session.appliance_type
+                    if model_name:
+                        session.state.model_name = model_name
+                    session.state.connected = True
 
-            if session.state is not None:
-                model_candidate = app_info_model or decoded.get("kind")
-                if model_candidate:
-                    session.state.model_name = str(model_candidate)
-                session.state.appliance_type = session.appliance_type
+                reply = build_clip_deploy_response(decoded)
+                await self._send_clip_json(session, did, reply)
+                if cmd == "preDeploy":
+                    asyncio.create_task(self._schedule_new_provisioning(session, did))
+                await self._publish_connectivity(session.state)
+                return
 
-            if not has_telemetry:
-                ack_payload = build_deploy_ack(decoded, session.device_id)
-                ack_topic = session.target_command_topic()
-                ack_pkt = encode_publish(ack_topic, json.dumps(ack_payload), qos=0, retain=False)
-                async with session.write_lock:
-                    session.writer.write(ack_pkt)
-                    await session.writer.drain()
+            if cmd == "completeProvisioning_ack":
+                LOGGER.info("Appliance completeProvisioning_ack client_id=%s", did)
+                await self._ensure_status_requested(session, did)
+                return
+
+            if cmd == "req_timesync":
+                await self._send_clip_json(session, did, build_clip_timesync_response(did))
+                await self._ensure_status_requested(session, did)
+                return
+
+            if cmd == "device_packet":
+                raw_data = str(decoded.get("data", "")).strip()
                 LOGGER.info(
-                    "Sent CLIP deploy_ack to device=%s on topic=%s mid=%s",
-                    session.device_id,
-                    ack_topic,
-                    ack_payload.get("mid"),
+                    "Appliance CLIP device_packet client_id=%s data=%s",
+                    did,
+                    raw_data[:256],
                 )
+                ack_payload = build_clip_ack(did, raw_data)
+                if ack_payload is not None:
+                    await self._send_clip_json(session, did, ack_payload)
+
+                prev_model = session.state.model_name if session.state is not None else ""
+                prev_door_open = session.state.door_open if session.state is not None else False
+                parsed_state = parse_aabb_status_frame(
+                    did,
+                    raw_data,
+                    model_name=prev_model,
+                    door_open=prev_door_open,
+                )
+                if parsed_state is not None:
+                    prev_state = self.states.get(session.device_id)
+                    self._sync_dryer_pairing_fields(parsed_state)
+                    session.state = parsed_state
+                    session.appliance_type = parsed_state.appliance_type
+                    self.states[session.device_id] = parsed_state
+                    await self.bridge.publish_state(parsed_state)
+                    LOGGER.info(
+                        "Decoded AABB status device=%s type=%s state=%s course=%s remain=%02d:%02d",
+                        did,
+                        parsed_state.appliance_type,
+                        parsed_state.current_state,
+                        parsed_state.course,
+                        parsed_state.remain_hour,
+                        parsed_state.remain_minute,
+                    )
+                    await self._handle_smart_pairing_transition(prev_state, parsed_state)
+                    return
+
+                door_evt = parse_aabb_door_event(raw_data)
+                if door_evt is not None:
+                    appliance_type, is_open = door_evt
+                    if session.state is None:
+                        session.state = ApplianceState(
+                            device_id=session.device_id,
+                            appliance_type=appliance_type,
+                            model_name=prev_model,
+                            connected=True,
+                            door_open=is_open,
+                        )
+                    else:
+                        session.state.door_open = is_open
+                    self._sync_dryer_pairing_fields(session.state)
+                    session.appliance_type = appliance_type
+                    self.states[session.device_id] = session.state
+                    await self.bridge.publish_state(session.state)
+                    LOGGER.info(
+                        "Decoded AABB door event device=%s type=%s door_open=%s",
+                        did,
+                        appliance_type,
+                        is_open,
+                    )
                 return
 
         try:
@@ -573,10 +852,128 @@ class LocalQServer:
             )
             return
 
+        prev_state = self.states.get(session.device_id)
+        self._sync_dryer_pairing_fields(state)
         session.appliance_type = state.appliance_type
         session.state = state
         self.states[session.device_id] = state
         await self.bridge.publish_state(state)
+        await self._handle_smart_pairing_transition(prev_state, state)
+
+    async def _publish_connectivity(self, state: ApplianceState) -> None:
+        bridge = getattr(self, "bridge", None)
+        if bridge is not None and hasattr(bridge, "publish_connectivity"):
+            await bridge.publish_connectivity(state)
+
+    def _get_smart_pairing_enabled(self) -> bool:
+        return bool(getattr(self, "smart_pairing_enabled", True))
+
+    def _get_smart_pairing_window(self) -> int:
+        cfg = getattr(self, "config", None)
+        return int(getattr(cfg, "smart_pairing_window_seconds", 10800))
+
+    def _get_course_mode(self, appliance_type: str) -> str:
+        cfg = getattr(self, "config", None)
+        if appliance_type == "dryer":
+            return str(getattr(cfg, "dryer_course_mode", "f025_45b"))
+        return str(getattr(cfg, "washer_course_mode", "f025_45b"))
+
+    def _sync_dryer_pairing_fields(self, state: ApplianceState) -> None:
+        if state.appliance_type == "dryer":
+            state.smart_pairing_enabled = self._get_smart_pairing_enabled()
+            state.recommended_course = str(
+                getattr(self, "recommended_dryer_course", "none")
+            )
+
+    async def _publish_dryer_pairing_topics(self) -> None:
+        enabled = self._get_smart_pairing_enabled()
+        recommended = str(getattr(self, "recommended_dryer_course", "none"))
+        for st in getattr(self, "states", {}).values():
+            if st.appliance_type == "dryer":
+                st.smart_pairing_enabled = enabled
+                st.recommended_course = recommended
+        bridge = getattr(self, "bridge", None)
+        if bridge is not None and hasattr(bridge, "publish_topic"):
+            await bridge.publish_topic(
+                "localq/dryer/smart_pairing",
+                "ON" if enabled else "OFF",
+                retain=True,
+            )
+            await bridge.publish_topic(
+                "localq/dryer/recommended_course",
+                recommended,
+                retain=True,
+            )
+
+    async def _handle_smart_pairing_transition(
+        self,
+        prev_state: ApplianceState | None,
+        new_state: ApplianceState,
+    ) -> None:
+        """Queue or apply paired dryer cycles across washer completion and dryer wake."""
+        if new_state.appliance_type == "washer":
+            was_completed = prev_state is not None and prev_state.run_completed
+            if new_state.run_completed and not was_completed:
+                mapped_course = map_washer_to_dryer_course(new_state.course)
+                if mapped_course is None:
+                    return
+                self.last_completed_washer_course = new_state.course
+                self.last_completed_washer_at = time.monotonic()
+                self.pending_dryer_course = mapped_course
+                self.recommended_dryer_course = mapped_course
+                LOGGER.info(
+                    "Smart Pairing queued dryer course=%s from washer course=%s",
+                    mapped_course,
+                    new_state.course,
+                )
+                await self._publish_dryer_pairing_topics()
+            return
+
+        if new_state.appliance_type != "dryer":
+            return
+
+        if (
+            prev_state is not None
+            and prev_state.current_state == RunState.POWER_OFF.value
+            and new_state.current_state == RunState.INITIAL.value
+        ):
+            pending = getattr(self, "pending_dryer_course", None)
+            if pending is not None:
+                completed_at = getattr(self, "last_completed_washer_at", None)
+                window_s = self._get_smart_pairing_window()
+                if (
+                    completed_at is not None
+                    and (time.monotonic() - completed_at) > window_s
+                ):
+                    LOGGER.info(
+                        "Smart Pairing expired pending dryer course=%s after %ds window",
+                        pending,
+                        window_s,
+                    )
+                    self.pending_dryer_course = None
+                    self.recommended_dryer_course = "none"
+                    await self._publish_dryer_pairing_topics()
+                elif self._get_smart_pairing_enabled():
+                    # Consume one-shot pairing so manual dial changes later are not overwritten.
+                    self.pending_dryer_course = None
+                    if new_state.course != pending:
+                        LOGGER.info(
+                            "Smart Pairing applying dryer course=%s on power-on",
+                            pending,
+                        )
+                        await self.send_appliance_command(
+                            new_state.device_id,
+                            f"course:{pending}",
+                        )
+            return
+
+        if (
+            new_state.current_state in (RunState.DRYING.value, RunState.END.value)
+            and getattr(self, "recommended_dryer_course", "none") != "none"
+        ):
+            self.pending_dryer_course = None
+            self.recommended_dryer_course = "none"
+            await self._publish_dryer_pairing_topics()
 
     def _infer_appliance_type(self, peer_ip: str, device_id: str) -> str:
         if peer_ip in self.config.known_appliances:

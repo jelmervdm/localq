@@ -25,13 +25,17 @@ from localq.mqtt_codec import (
     read_mqtt_packet,
 )
 from localq.protocol import (
+    AABB_STATUS_REQUEST_HEX,
     OperationMode,
+    aabb_frame,
     build_certificate_list_response,
     build_certificate_response,
-    build_deploy_ack,
+    build_clip_deploy_response,
     build_dispatch_response,
     build_operation_command,
     decode_json_payload,
+    parse_aabb_door_event,
+    parse_aabb_status_frame,
     parse_appliance_telemetry,
 )
 from localq.server import LocalQServer
@@ -260,10 +264,52 @@ class TestProtocolAndDiscovery(unittest.TestCase):
         states_map = dict(bridge.build_state_messages(state))
         self.assertEqual(states_map["localq/dryer/door"], "ON")
 
-        ack = build_deploy_ack({"mid": 45197, "did": "6517a23a-9421-1e48-b34d-d48d2696fc1e"}, "fallback")
-        self.assertEqual(ack["cmd"], "deploy_ack")
-        self.assertEqual(ack["result"], "0000")
-        self.assertEqual(ack["mid"], 45197)
+        washer_state = parse_appliance_telemetry(
+            device_id="washer-door-lock-test",
+            payload_bytes=b'{"deviceType":"201","washerDryer":{"currentState":"RUNNING","doorLock":true}}',
+            default_type="washer",
+        )
+        washer_discovery = dict(bridge.build_discovery_messages(washer_state))
+        door_lock_cfg = washer_discovery["homeassistant/binary_sensor/localq_front_load_washer/door_lock/config"]
+        self.assertEqual(door_lock_cfg["device_class"], "lock")
+        self.assertEqual(door_lock_cfg["payload_on"], "OFF")
+        self.assertEqual(door_lock_cfg["payload_off"], "ON")
+        washer_states = dict(bridge.build_state_messages(washer_state))
+        self.assertEqual(washer_states["localq/front_load_washer/door_lock"], "ON")
+
+        deploy_resp = build_clip_deploy_response({"did": "dryer-test-01", "cmd": "deploy"})
+        self.assertEqual(deploy_resp["cmd"], "completeProvisioning")
+        self.assertEqual(deploy_resp["data"]["host"], "message")
+        self.assertEqual(
+            deploy_resp["data"]["appInfo"]["publication"]["message"],
+            "clip/message/devices/dryer-test-01",
+        )
+
+        # Verify washer 0xEB frame decoding (51-byte record, little-endian time, door lock)
+        w_rec = bytearray(51)
+        w_rec[0] = 0x0A
+        w_rec[2] = 9  # Warm
+        w_rec[4] = 15  # High
+        w_rec[5] = 46  # Normal
+        w_rec[14:16] = (32).to_bytes(2, "little")
+        w_rec[16:18] = (55).to_bytes(2, "little")
+        w_rec[21] = 5  # running
+        w_rec[37] = 0x10  # remote_control_enabled
+        w_rec[38] = 1  # door_locked
+        w_inner = (
+            bytes([0x20, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xEB])
+            + len(w_rec).to_bytes(2, "big")
+            + bytes(w_rec)
+        )
+        w_state = parse_aabb_status_frame("washer-test-01", aabb_frame(w_inner).hex().upper())
+        self.assertIsNotNone(w_state)
+        self.assertEqual(w_state.appliance_type, "washer")
+        self.assertEqual(w_state.current_state, "running")
+        self.assertEqual(w_state.course, "Normal")
+        self.assertEqual(w_state.remaining_time_minutes, 32)
+        self.assertTrue(w_state.remote_control_enabled)
+        self.assertTrue(w_state.door_locked)
+        self.assertFalse(w_state.door_open)
 
     def test_softap_payload_helpers(self) -> None:
         probe = json.loads(build_softap_probe_payload().decode("utf-8"))
@@ -433,7 +479,7 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
             finally:
                 await server.stop()
 
-    async def test_clip_provisioning_deploy_ack_preserves_state(self) -> None:
+    async def test_clip_provisioning_and_aabb_status_and_door_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = LocalQConfig(
                 bind_host="127.0.0.1",
@@ -441,7 +487,7 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
                 mqtt_tls_port=0,
                 public_host="common.iot.aic.lgthinq.com",
                 certs_dir=Path(tmp),
-                known_appliances={"6517a23a-9421-1e48-b34d-d48d2696fc1e": "dryer"},
+                known_appliances={"dryer-clip-01": "dryer"},
             )
             bridge = _RecordingBridge(cfg)
             server = LocalQServer(config=cfg, bridge=bridge, enable_ha_client=False)
@@ -450,7 +496,7 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
             try:
                 _https_port, mqtt_port = server.bound_ports()
                 client_ctx = ssl.create_default_context(cafile=str(Path(tmp) / "ca.crt"))
-                did = "6517a23a-9421-1e48-b34d-d48d2696fc1e"
+                did = "dryer-clip-01"
 
                 m_reader, m_writer = await asyncio.open_connection(
                     "127.0.0.1",
@@ -468,6 +514,7 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
                 suback = await read_mqtt_packet(m_reader)
                 self.assertEqual(suback[0], PacketType.SUBACK)
 
+                # 1. NUL-terminated CLIP deploy -> server sends completeProvisioning
                 deploy_payload = (
                     json.dumps(
                         {
@@ -486,17 +533,90 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
                 )
                 await m_writer.drain()
 
-                ack_pkt = await asyncio.wait_for(read_mqtt_packet(m_reader), timeout=2.0)
-                self.assertEqual(ack_pkt[0], PacketType.PUBLISH)
-                ack_pub = decode_publish(ack_pkt[1], ack_pkt[2])
-                self.assertEqual(ack_pub.topic, f"lime/devices/{did}")
-                ack_json = json.loads(ack_pub.payload.decode("utf-8"))
-                self.assertEqual(ack_json["cmd"], "deploy_ack")
-                self.assertEqual(ack_json["result"], "0000")
-                self.assertEqual(ack_json["mid"], 45197)
+                prov_pkt = await asyncio.wait_for(read_mqtt_packet(m_reader), timeout=2.0)
+                self.assertEqual(prov_pkt[0], PacketType.PUBLISH)
+                prov_pub = decode_publish(prov_pkt[1], prov_pkt[2])
+                self.assertEqual(prov_pub.topic, f"lime/devices/{did}")
+                prov_json = json.loads(prov_pub.payload.decode("utf-8"))
+                self.assertEqual(prov_json["cmd"], "completeProvisioning")
 
-                self.assertEqual(server.states[did].current_state, "initial")
-                self.assertEqual(server.states[did].model_name, "BDH_D30007_US")
+                # 2. completeProvisioning_ack -> server sends 0xF0ED status query
+                m_writer.write(
+                    encode_publish(
+                        f"clip/message/devices/{did}",
+                        json.dumps({"did": did, "cmd": "completeProvisioning_ack"}),
+                    )
+                )
+                await m_writer.drain()
+
+                poll_pkt = await asyncio.wait_for(read_mqtt_packet(m_reader), timeout=2.0)
+                poll_pub = decode_publish(poll_pkt[1], poll_pkt[2])
+                poll_json = json.loads(poll_pub.payload.decode("utf-8"))
+                self.assertEqual(poll_json["cmd"], "packet")
+                self.assertEqual(
+                    poll_json["data"],
+                    aabb_frame(bytes.fromhex(AABB_STATUS_REQUEST_HEX)).hex().upper(),
+                )
+
+                # 3. 0xEB dryer status frame (cooling, course Normal=7, 6 min remain)
+                rec = bytearray(42)
+                rec[1] = 3  # dry_level: normal
+                rec[5] = 7  # course: Normal
+                rec[9:11] = (6).to_bytes(2, "big")
+                rec[11:13] = (45).to_bytes(2, "big")
+                rec[13] = 8  # cooling
+                rec[26] = 0x40  # remote_control_enabled
+                inner_eb = (
+                    bytes([0x30, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xEB])
+                    + len(rec).to_bytes(2, "big")
+                    + bytes(rec)
+                )
+                eb_hex = aabb_frame(inner_eb).hex().upper()
+                self.assertIsNotNone(parse_aabb_status_frame(did, eb_hex))
+
+                m_writer.write(
+                    encode_publish(
+                        f"clip/message/devices/{did}",
+                        json.dumps({"did": did, "cmd": "device_packet", "data": eb_hex}),
+                    )
+                )
+                await m_writer.drain()
+                await asyncio.sleep(0.05)
+
+                self.assertEqual(server.states[did].current_state, "cooling")
+                self.assertEqual(server.states[did].course, "Normal")
+                self.assertEqual(server.states[did].remaining_time_minutes, 6)
+                self.assertTrue(server.states[did].remote_control_enabled)
+                self.assertTrue(
+                    any(t == "localq/dryer/current_status" and v == "cooling" for t, v in bridge.published)
+                )
+
+                # 4. 0x03 subtype 0x10 dryer door open event
+                door_payload = bytearray(19)
+                door_payload[0] = 0x10
+                door_payload[4] = 0x10
+                door_payload[18] = 0x01
+                inner_door = (
+                    bytes([0x30, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03])
+                    + len(door_payload).to_bytes(2, "big")
+                    + bytes(door_payload)
+                )
+                door_hex = aabb_frame(inner_door).hex().upper()
+                self.assertEqual(parse_aabb_door_event(door_hex), ("dryer", True))
+
+                m_writer.write(
+                    encode_publish(
+                        f"clip/message/devices/{did}",
+                        json.dumps({"did": did, "cmd": "device_packet", "data": door_hex}),
+                    )
+                )
+                await m_writer.drain()
+                await asyncio.sleep(0.05)
+
+                self.assertTrue(server.states[did].door_open)
+                self.assertTrue(
+                    any(t == "localq/dryer/door" and v == "ON" for t, v in bridge.published)
+                )
 
                 m_writer.close()
                 await m_writer.wait_closed()
