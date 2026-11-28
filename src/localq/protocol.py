@@ -543,6 +543,7 @@ _WASHER_STATES: dict[int, str] = {
     27: RunState.INITIAL.value,
     28: RunState.PAUSE.value,
     29: RunState.RUNNING.value,
+    37: RunState.DETECTING.value,
     42: RunState.END.value,
 }
 

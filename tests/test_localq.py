@@ -311,6 +311,18 @@ class TestProtocolAndDiscovery(unittest.TestCase):
         self.assertTrue(w_state.door_locked)
         self.assertFalse(w_state.door_open)
 
+        w_rec[21] = 37  # AI Wash load sensing
+        w_detect = parse_aabb_status_frame(
+            "washer-test-01",
+            aabb_frame(
+                bytes([0x20, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xEB])
+                + len(w_rec).to_bytes(2, "big")
+                + bytes(w_rec)
+            ).hex().upper(),
+        )
+        self.assertIsNotNone(w_detect)
+        self.assertEqual(w_detect.current_state, "detecting")
+
     def test_softap_payload_helpers(self) -> None:
         probe = json.loads(build_softap_probe_payload().decode("utf-8"))
         self.assertEqual(probe["cmd"], "get_device_info")
