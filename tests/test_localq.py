@@ -28,8 +28,10 @@ from localq.protocol import (
     OperationMode,
     build_certificate_list_response,
     build_certificate_response,
+    build_deploy_ack,
     build_dispatch_response,
     build_operation_command,
+    decode_json_payload,
     parse_appliance_telemetry,
 )
 from localq.server import LocalQServer
@@ -228,6 +230,41 @@ class TestProtocolAndDiscovery(unittest.TestCase):
         self.assertEqual(cert_resp["resultCode"], "0000")
         self.assertIn("BEGIN CERTIFICATE", cert_resp["result"]["certificatePem"])
 
+    def test_nul_terminated_json_numeric_device_type_and_door_sensor(self) -> None:
+        raw = (
+            b'{"deviceType":"202","kind":"BDH_D30007_US","data":{"state":{"reported":'
+            b'{"washerDryer":{"currentState":"DRYING","doorState":"OPEN"}}}}} \x00'
+        )
+        decoded = decode_json_payload(raw)
+        self.assertEqual(decoded["kind"], "BDH_D30007_US")
+
+        state = parse_appliance_telemetry(
+            device_id="6517a23a-9421-1e48-b34d-d48d2696fc1e",
+            payload_bytes=raw,
+            default_type="washer",
+        )
+        self.assertEqual(state.appliance_type, "dryer")
+        self.assertEqual(state.model_name, "BDH_D30007_US")
+        self.assertEqual(state.current_state, "drying")
+        self.assertTrue(state.door_open)
+
+        bridge = HADiscoveryBridge(LocalQConfig())
+        discovery = dict(bridge.build_discovery_messages(state))
+        self.assertIn("homeassistant/binary_sensor/localq_dryer/door/config", discovery)
+        self.assertEqual(
+            discovery["homeassistant/binary_sensor/localq_dryer/door/config"][
+                "default_entity_id"
+            ],
+            "binary_sensor.dryer_door",
+        )
+        states_map = dict(bridge.build_state_messages(state))
+        self.assertEqual(states_map["localq/dryer/door"], "ON")
+
+        ack = build_deploy_ack({"mid": 45197, "did": "6517a23a-9421-1e48-b34d-d48d2696fc1e"}, "fallback")
+        self.assertEqual(ack["cmd"], "deploy_ack")
+        self.assertEqual(ack["result"], "0000")
+        self.assertEqual(ack["mid"], 45197)
+
     def test_softap_payload_helpers(self) -> None:
         probe = json.loads(build_softap_probe_payload().decode("utf-8"))
         self.assertEqual(probe["cmd"], "get_device_info")
@@ -390,6 +427,76 @@ class TestServerEndToEnd(unittest.IsolatedAsyncioTestCase):
                 await m_writer.drain()
                 ping_resp = await asyncio.wait_for(read_mqtt_packet(m_reader), timeout=2.0)
                 self.assertEqual(ping_resp[0], PacketType.PINGRESP)
+
+                m_writer.close()
+                await m_writer.wait_closed()
+            finally:
+                await server.stop()
+
+    async def test_clip_provisioning_deploy_ack_preserves_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = LocalQConfig(
+                bind_host="127.0.0.1",
+                https_port=0,
+                mqtt_tls_port=0,
+                public_host="common.iot.aic.lgthinq.com",
+                certs_dir=Path(tmp),
+                known_appliances={"6517a23a-9421-1e48-b34d-d48d2696fc1e": "dryer"},
+            )
+            bridge = _RecordingBridge(cfg)
+            server = LocalQServer(config=cfg, bridge=bridge, enable_ha_client=False)
+            await server.start()
+
+            try:
+                _https_port, mqtt_port = server.bound_ports()
+                client_ctx = ssl.create_default_context(cafile=str(Path(tmp) / "ca.crt"))
+                did = "6517a23a-9421-1e48-b34d-d48d2696fc1e"
+
+                m_reader, m_writer = await asyncio.open_connection(
+                    "127.0.0.1",
+                    mqtt_port,
+                    ssl=client_ctx,
+                    server_hostname="common.iot.aic.lgthinq.com",
+                )
+                m_writer.write(encode_connect(client_id=did))
+                await m_writer.drain()
+                connack = await read_mqtt_packet(m_reader)
+                self.assertEqual(connack[0], PacketType.CONNACK)
+
+                m_writer.write(encode_subscribe(1, [(f"lime/devices/{did}", 0)]))
+                await m_writer.drain()
+                suback = await read_mqtt_packet(m_reader)
+                self.assertEqual(suback[0], PacketType.SUBACK)
+
+                deploy_payload = (
+                    json.dumps(
+                        {
+                            "mid": 45197,
+                            "did": did,
+                            "kind": "BDH_D30007_US",
+                            "cmd": "deploy",
+                            "deviceType": "202",
+                            "data": {"appInfo": {"modelName": "BDH_D30007_US"}},
+                        }
+                    ).encode("utf-8")
+                    + b"\x00"
+                )
+                m_writer.write(
+                    encode_publish(f"clip/provisioning/devices/{did}", deploy_payload)
+                )
+                await m_writer.drain()
+
+                ack_pkt = await asyncio.wait_for(read_mqtt_packet(m_reader), timeout=2.0)
+                self.assertEqual(ack_pkt[0], PacketType.PUBLISH)
+                ack_pub = decode_publish(ack_pkt[1], ack_pkt[2])
+                self.assertEqual(ack_pub.topic, f"lime/devices/{did}")
+                ack_json = json.loads(ack_pub.payload.decode("utf-8"))
+                self.assertEqual(ack_json["cmd"], "deploy_ack")
+                self.assertEqual(ack_json["result"], "0000")
+                self.assertEqual(ack_json["mid"], 45197)
+
+                self.assertEqual(server.states[did].current_state, "initial")
+                self.assertEqual(server.states[did].model_name, "BDH_D30007_US")
 
                 m_writer.close()
                 await m_writer.wait_closed()

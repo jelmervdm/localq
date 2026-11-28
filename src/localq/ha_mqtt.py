@@ -133,6 +133,13 @@ _COMMON_ENTITIES: tuple[_EntitySpec, ...] = (
         state_topic_suffix="error",
         extra={"entity_category": "diagnostic"},
     ),
+    _EntitySpec(
+        component="binary_sensor",
+        object_suffix="door",
+        name="Door",
+        state_topic_suffix="door",
+        extra={"device_class": "door", "payload_on": "ON", "payload_off": "OFF"},
+    ),
 )
 
 _WASHER_EXTRA_ENTITIES: tuple[_EntitySpec, ...] = (
@@ -262,6 +269,7 @@ class HADiscoveryBridge:
             (f"{base_topic}/total_time", str(state.total_time_minutes)),
             (f"{base_topic}/course", state.course),
             (f"{base_topic}/error", state.error_code),
+            (f"{base_topic}/door", "ON" if state.door_open else "OFF"),
         ]
         if state.appliance_type != "dryer":
             updates.append(

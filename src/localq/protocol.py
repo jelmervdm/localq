@@ -95,6 +95,7 @@ class ApplianceState:
         water_temp: Washer water temperature setting, if reported.
         dry_level: Dryer dryness level setting, if reported.
         door_locked: True when drum door lock is engaged.
+        door_open: True when the appliance door is reported open.
         run_completed: True when cycle ended (``end`` / ``wrinkle_care``).
         error_code: Diagnostic error code (``"none"`` when healthy).
         connected: True while the appliance holds an active local TLS session.
@@ -116,6 +117,7 @@ class ApplianceState:
     water_temp: str | None = None
     dry_level: str | None = None
     door_locked: bool = False
+    door_open: bool = False
     run_completed: bool = False
     error_code: str = "none"
     connected: bool = True
@@ -195,6 +197,26 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def decode_json_payload(payload_bytes: bytes) -> dict[str, Any]:
+    """Decode a ThinQ MQTT JSON payload, stripping trailing NUL padding bytes.
+
+    Args:
+        payload_bytes: Raw payload bytes received from the appliance.
+
+    Returns:
+        Decoded JSON dictionary.
+
+    Raises:
+        ValueError: If the payload is not valid JSON or does not decode to a dict.
+        UnicodeDecodeError: If the payload is not valid UTF-8.
+    """
+    cleaned = payload_bytes.rstrip(b"\x00\r\n\t ")
+    decoded = json.loads(cleaned.decode("utf-8"))
+    if not isinstance(decoded, dict):
+        raise ValueError("Telemetry payload must decode to a JSON object")
+    return decoded
+
+
 def parse_appliance_telemetry(
     device_id: str,
     payload_bytes: bytes,
@@ -216,9 +238,7 @@ def parse_appliance_telemetry(
     Returns:
         Populated :class:`ApplianceState`.
     """
-    decoded = json.loads(payload_bytes.decode("utf-8"))
-    if not isinstance(decoded, dict):
-        raise ValueError("Telemetry payload must decode to a JSON object")
+    decoded = decode_json_payload(payload_bytes)
 
     state_root = _extract_state_dict(decoded)
     laundry_block = state_root.get("washerDryer")
@@ -228,9 +248,11 @@ def parse_appliance_telemetry(
     if any(k in fields for k in ("dryLevel", "dry_level", "dryer_operation_mode")):
         appliance_type = "dryer"
     elif "deviceType" in decoded:
-        if "DRYER" in str(decoded["deviceType"]).upper():
+        device_type_raw = str(decoded["deviceType"]).strip()
+        device_type_upper = device_type_raw.upper()
+        if device_type_raw == "202" or "DRYER" in device_type_upper:
             appliance_type = "dryer"
-        elif "WASHER" in str(decoded["deviceType"]).upper():
+        elif device_type_raw == "201" or "WASHER" in device_type_upper:
             appliance_type = "washer"
 
     raw_state = (
@@ -241,10 +263,19 @@ def parse_appliance_telemetry(
     )
     normalized_state = normalize_state_value(raw_state)
 
+    app_info_model: Any = None
+    data_block = decoded.get("data")
+    if isinstance(data_block, dict):
+        app_info = data_block.get("appInfo")
+        if isinstance(app_info, dict):
+            app_info_model = app_info.get("modelName")
+
     model_name = (
         str(
             decoded.get("modelName")
             or fields.get("modelName")
+            or app_info_model
+            or decoded.get("kind")
             or default_model
             or ("LG_Smart_Dryer2" if appliance_type == "dryer" else "LG_Smart_Laundry2")
         )
@@ -259,6 +290,11 @@ def parse_appliance_telemetry(
         fields.get("doorLock")
         if "doorLock" in fields
         else fields.get("door_locked", False)
+    )
+    door_open = _coerce_bool(
+        fields.get("doorOpen")
+        if "doorOpen" in fields
+        else fields.get("door_open", str(fields.get("doorState", "")).strip().upper() == "OPEN")
     )
 
     remain_hour = _coerce_int(fields.get("remainTimeHour", fields.get("remain_hour")))
@@ -299,6 +335,7 @@ def parse_appliance_telemetry(
         water_temp=str(water_temp) if water_temp is not None else None,
         dry_level=str(dry_level) if dry_level is not None else None,
         door_locked=door_locked,
+        door_open=door_open,
         run_completed=run_completed,
         error_code=error_code,
         connected=True,
@@ -342,6 +379,25 @@ def build_operation_command(
                 }
             },
         },
+    }
+
+
+def build_deploy_ack(decoded: dict[str, Any], device_id: str) -> dict[str, Any]:
+    """Build an acknowledgment payload for CLIP provisioning ``cmd: "deploy"`` frames.
+
+    Args:
+        decoded: Decoded CLIP provisioning JSON object from the appliance.
+        device_id: Fallback appliance identifier from the MQTT session.
+
+    Returns:
+        JSON-serializable acknowledgment dict for ``lime/devices/<did>``.
+    """
+    return {
+        "mid": decoded.get("mid"),
+        "did": str(decoded.get("did") or device_id),
+        "cmd": "deploy_ack",
+        "result": "0000",
+        "resultCode": "0000",
     }
 
 

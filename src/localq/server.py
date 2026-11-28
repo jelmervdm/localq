@@ -31,8 +31,10 @@ from localq.protocol import (
     OperationMode,
     build_certificate_list_response,
     build_certificate_response,
+    build_deploy_ack,
     build_dispatch_response,
     build_operation_command,
+    decode_json_payload,
     parse_appliance_telemetry,
 )
 from localq.tls_ca import LocalCertificateAuthority
@@ -459,7 +461,7 @@ class LocalQServer:
                         pub.topic,
                         len(pub.payload),
                     )
-                    await self._process_telemetry(session, pub.payload)
+                    await self._process_telemetry(session, pub.topic, pub.payload)
 
                 elif ptype == PacketType.PINGREQ:
                     async with session.write_lock:
@@ -480,7 +482,81 @@ class LocalQServer:
                     await self.bridge.publish_state(session.state)
             await _safe_close(writer)
 
-    async def _process_telemetry(self, session: ApplianceSession, payload: bytes) -> None:
+    async def _process_telemetry(
+        self,
+        session: ApplianceSession,
+        topic: str,
+        payload: bytes,
+    ) -> None:
+        try:
+            decoded = decode_json_payload(payload)
+        except (ValueError, UnicodeDecodeError) as exc:
+            LOGGER.warning(
+                "Unrecognized telemetry format from %s (%s): %s; raw=%r",
+                session.device_id,
+                session.peer_ip,
+                exc,
+                payload[:4096],
+            )
+            return
+
+        if topic.startswith("clip/provisioning/") or decoded.get("cmd") == "deploy":
+            LOGGER.info(
+                "Appliance CLIP provisioning payload device=%s topic=%s payload=%s",
+                session.device_id,
+                topic,
+                json.dumps(decoded),
+            )
+            device_type_raw = str(decoded.get("deviceType", "")).strip()
+            if device_type_raw == "202":
+                session.appliance_type = "dryer"
+            elif device_type_raw == "201":
+                session.appliance_type = "washer"
+
+            data_block = decoded.get("data")
+            app_info_model: Any = None
+            has_telemetry = False
+            if isinstance(data_block, dict):
+                app_info = data_block.get("appInfo")
+                if isinstance(app_info, dict):
+                    app_info_model = app_info.get("modelName")
+                state_block = data_block.get("state")
+                reported = state_block.get("reported") if isinstance(state_block, dict) else None
+                has_telemetry = any(
+                    isinstance(container, dict)
+                    and ("washerDryer" in container or "currentState" in container)
+                    for container in (data_block, state_block, reported)
+                )
+            if not has_telemetry:
+                state_block = decoded.get("state")
+                reported = state_block.get("reported") if isinstance(state_block, dict) else None
+                has_telemetry = any(
+                    isinstance(container, dict)
+                    and ("washerDryer" in container or "currentState" in container)
+                    for container in (state_block, reported)
+                )
+
+            if session.state is not None:
+                model_candidate = app_info_model or decoded.get("kind")
+                if model_candidate:
+                    session.state.model_name = str(model_candidate)
+                session.state.appliance_type = session.appliance_type
+
+            if not has_telemetry:
+                ack_payload = build_deploy_ack(decoded, session.device_id)
+                ack_topic = session.target_command_topic()
+                ack_pkt = encode_publish(ack_topic, json.dumps(ack_payload), qos=0, retain=False)
+                async with session.write_lock:
+                    session.writer.write(ack_pkt)
+                    await session.writer.drain()
+                LOGGER.info(
+                    "Sent CLIP deploy_ack to device=%s on topic=%s mid=%s",
+                    session.device_id,
+                    ack_topic,
+                    ack_payload.get("mid"),
+                )
+                return
+
         try:
             state = parse_appliance_telemetry(
                 device_id=session.device_id,
@@ -493,7 +569,7 @@ class LocalQServer:
                 session.device_id,
                 session.peer_ip,
                 exc,
-                payload[:512],
+                payload[:4096],
             )
             return
 
